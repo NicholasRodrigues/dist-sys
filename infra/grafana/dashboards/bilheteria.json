@@ -1,0 +1,119 @@
+{
+  "uid": "bilheteria",
+  "title": "Bilheteria — visao geral",
+  "tags": ["bilheteria"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": { "from": "now-15m", "to": "now" },
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Latência do checkout (p50 / p95 / p99)",
+      "description": "Meta: p95 abaixo de 500 ms sob pico.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{route=\"/api/orders\"}[1m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{route=\"/api/orders\"}[1m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{route=\"/api/orders\"}[1m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latência da leitura do mapa (p95)",
+      "description": "Meta: abaixo de 100 ms com cache.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{route=~\"/api/events.*seatmap\"}[1m])) by (le))",
+          "legendFormat": "p95 seatmap"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Requisições por segundo, por status",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "lineWidth": 2, "fillOpacity": 10, "stacking": { "mode": "normal" } } } },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(http_requests_total{service=\"edge\"}[1m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Fila virtual: profundidade e admissões",
+      "description": "A tese do projeto: converter pico em vazão constante.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "sum(waiting_room_depth)", "legendFormat": "pessoas na fila" },
+        { "expr": "sum(rate(waiting_room_admissions_total[1m]))", "legendFormat": "admissões/s" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Defesas de borda: rate limit e load shedding",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "sum by (scope) (rate(rate_limited_total[1m]))", "legendFormat": "429 {{scope}}" },
+        { "expr": "sum(rate(load_shed_total[1m]))", "legendFormat": "descartadas" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Circuit breaker (0 fechado · 1 meio-aberto · 2 aberto)",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 16 },
+      "fieldConfig": { "defaults": { "min": 0, "max": 2, "custom": { "lineWidth": 2, "fillOpacity": 20 } } },
+      "targets": [
+        { "expr": "max by (target) (circuit_breaker_state)", "legendFormat": "{{target}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Passos da SAGA por resultado",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 16 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        {
+          "expr": "sum by (step, outcome) (rate(saga_steps_total[1m]))",
+          "legendFormat": "{{step}} · {{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Eventos de negócio",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 23 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "sum by (event) (rate(business_events_total[1m]))", "legendFormat": "{{event}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Cache do catálogo e acúmulo na outbox",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 23 },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "sum by (result) (rate(cache_operations_total[1m]))", "legendFormat": "cache {{result}}" },
+        { "expr": "sum(outbox_pending)", "legendFormat": "outbox pendente" }
+      ]
+    }
+  ]
+}

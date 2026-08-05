@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: bilheteria
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - edge-blue:3000
+          - edge-green:3000
+          - catalog:3001
+          - inventory:3002
+          - orders:3003
+          - payments:3004
+          - realtime:3005
+          - psp-sandbox:3010
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '([^:]+):.*'
+        target_label: instance
+        replacement: '$1'
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

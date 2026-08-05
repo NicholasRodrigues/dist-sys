@@ -1,0 +1,30 @@
+# Configuracao estatica do Traefik.
+#
+# Provider de arquivo em vez do provider Docker, por tres motivos:
+#
+#  1. Nao precisa montar o socket do Docker no contentor do proxy — dar acesso
+#     ao daemon a um servico exposto na borda e exatamente o tipo de coisa que
+#     nao se deve fazer, mesmo num projeto de faculdade.
+#  2. Os pesos de roteamento ficam declarados e versionados, que e o que torna
+#     canary e blue-green demonstraveis de verdade.
+#  3. Nao acopla a versao da API do Docker do host.
+
+entryPoints:
+  web:
+    address: ':80'
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    # Recarrega sozinho quando o arquivo muda: e assim que o canary avanca
+    # sem reiniciar nada.
+    watch: true
+
+api:
+  dashboard: true
+  insecure: true
+
+log:
+  level: INFO
+
+accessLog: {}

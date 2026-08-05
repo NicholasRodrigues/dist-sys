@@ -1,0 +1,43 @@
+# Configuracao dinamica do Traefik — roteamento e pesos.
+#
+# Este arquivo e reescrito por `make canary` / `make blue-green`, e o Traefik
+# recarrega sozinho. E o mecanismo dos cenarios D1 e D2 do plano de testes.
+#
+# Duas instancias do `edge` rodam o tempo todo, chamadas de azul e verde. Em
+# operacao normal o trafego vai 50/50 entre elas — o que ja demonstra load
+# balancing. Num deploy, os pesos mudam progressivamente.
+
+http:
+  routers:
+    edge:
+      rule: PathPrefix(`/`)
+      entryPoints:
+        - web
+      service: edge-weighted
+
+  services:
+    edge-weighted:
+      weighted:
+        services:
+          - name: edge-blue
+            weight: 50
+          - name: edge-green
+            weight: 50
+
+    edge-blue:
+      loadBalancer:
+        servers:
+          - url: http://edge-blue:3000
+        healthCheck:
+          path: /health
+          interval: 5s
+          timeout: 2s
+
+    edge-green:
+      loadBalancer:
+        servers:
+          - url: http://edge-green:3000
+        healthCheck:
+          path: /health
+          interval: 5s
+          timeout: 2s

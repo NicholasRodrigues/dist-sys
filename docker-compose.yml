@@ -1,0 +1,345 @@
+# Bilheteria — sistema completo em Docker Compose.
+#
+# O checklist da Secao 7 pede "Docker Compose ou equivalente para execucao
+# local". Nao ha Kubernetes, nuvem nem servico externo: `make up` sobe tudo.
+#
+# Catorze conteineres: 6 servicos + PSP falso + Postgres + Redis + Redpanda +
+# Traefik + Prometheus + Grafana + Jaeger.
+
+name: bilheteria
+
+x-service-base: &service-base
+  # Sem `build:` aqui de proposito: apenas o servico `edge` constroi a imagem, e
+  # todos os outros a reutilizam. Construir o mesmo Dockerfile em oito alvos
+  # paralelos dispara oito `npm ci` simultaneos e derruba a maquina.
+  image: bilheteria/services:local
+  restart: unless-stopped
+  environment: &service-env
+    NODE_ENV: production
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    POSTGRES_HOST: postgres
+    POSTGRES_PORT: 5432
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    KAFKA_BROKERS: redpanda:9092
+    KAFKA_TOPIC: bilheteria.events
+    OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+    TRACING_ENABLED: ${TRACING_ENABLED:-true}
+    JWT_SECRET: ${JWT_SECRET:-dev-secret-nao-use-em-producao}
+    CATALOG_URL: http://catalog:3001
+    INVENTORY_URL: http://inventory:3002
+    ORDERS_URL: http://orders:3003
+    PAYMENTS_URL: http://payments:3004
+    REALTIME_URL: http://realtime:3005
+    PSP_URL: http://psp-sandbox:3010
+    HOLD_TTL_SECONDS: ${HOLD_TTL_SECONDS:-600}
+    TICKET_PRICE_CENTS: ${TICKET_PRICE_CENTS:-25000}
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    redpanda:
+      condition: service_healthy
+
+services:
+  # ---------------------------------------------------------------------------
+  # Infraestrutura
+  # ---------------------------------------------------------------------------
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bilheteria
+      POSTGRES_PASSWORD: bilheteria
+      POSTGRES_DB: postgres
+    # Uma instancia, quatro bancos logicos com credencial propria. O padrao
+    # Database per Service e sobre acoplamento por schema, nao sobre contagem
+    # de processos.
+    volumes:
+      - ./src/migrations:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - max_connections=300
+      - -c
+      - shared_buffers=256MB
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bilheteria -d postgres']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--save', '', '--appendonly', 'no', '--maxmemory-policy', 'noeviction']
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redpanda:
+    image: redpandadata/redpanda:v24.2.11
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=768M
+      - --overprovisioned
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092
+    ports:
+      - '${REDPANDA_PORT:-19092}:9092'
+    healthcheck:
+      test: ['CMD-SHELL', 'rpk cluster health -X brokers=localhost:9092 | grep -q "Healthy:.*true"']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # Observabilidade
+  #
+  # Nao e enfeite: a dimensao de Testes exige "metricas coletadas" e o videocast
+  # exige "demonstracao funcional". Estes tres conteineres sao o instrumento que
+  # produz as duas evidencias.
+  # ---------------------------------------------------------------------------
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: 'true'
+    ports:
+      - '${JAEGER_PORT:-16686}:16686'
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+    ports:
+      - '${PROMETHEUS_PORT:-9090}:9090'
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./infra/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    ports:
+      - '${GRAFANA_PORT:-3030}:3000'
+    depends_on:
+      - prometheus
+
+  # ---------------------------------------------------------------------------
+  # Borda
+  # ---------------------------------------------------------------------------
+
+  traefik:
+    image: traefik:v3.2
+    restart: unless-stopped
+    volumes:
+      # Sem socket do Docker: a configuracao vem de arquivo, versionada.
+      - ./infra/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./infra/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+    ports:
+      - '${EDGE_PORT:-8080}:80'
+      - '${TRAEFIK_DASHBOARD_PORT:-8081}:8080'
+    depends_on:
+      - edge-blue
+      - edge-green
+
+  # ---------------------------------------------------------------------------
+  # Servicos
+  # ---------------------------------------------------------------------------
+
+  # Duas instancias nomeadas do `edge`, azul e verde.
+  #
+  # Nao sao replicas anonimas: sao alvos identificaveis com peso proprio no
+  # Traefik. E o que torna load balancing, blue-green e canary a MESMA
+  # mecanica, mudando so os pesos — e o que permite ver, na resposta HTTP,
+  # qual instancia atendeu.
+  edge-blue:
+    <<: *service-base
+    # O unico alvo de build do projeto.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      <<: *service-env
+      SERVICE_NAME: edge
+      APP_VERSION: blue
+      PORT: 3000
+      # O edge nao tem banco proprio: o estado dele vive no Redis.
+      POSTGRES_DB: postgres
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-2000}
+      LOAD_SHED_THRESHOLD: ${LOAD_SHED_THRESHOLD:-120}
+    command: ['node', 'dist/services/edge/index.js']
+    expose:
+      - '3000'
+
+  edge-green:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: edge
+      APP_VERSION: green
+      PORT: 3000
+      POSTGRES_DB: postgres
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-2000}
+      LOAD_SHED_THRESHOLD: ${LOAD_SHED_THRESHOLD:-120}
+      # Injecao de erro artificial: e como o cenario D2 prova que um canary
+      # ruim e revertido em vez de virar 100% do trafego.
+      FAULT_RATE: ${GREEN_FAULT_RATE:-0}
+    command: ['node', 'dist/services/edge/index.js']
+    expose:
+      - '3000'
+
+  catalog:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: catalog
+      PORT: 3001
+      POSTGRES_DB: catalog
+      POSTGRES_USER: catalog_svc
+      POSTGRES_PASSWORD: catalog_svc
+    command: ['node', 'dist/services/catalog/index.js']
+    ports:
+      - '${CATALOG_PORT:-3001}:3001'
+
+  inventory:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: inventory
+      PORT: 3002
+      POSTGRES_DB: inventory
+      POSTGRES_USER: inventory_svc
+      POSTGRES_PASSWORD: inventory_svc
+      # Pool pequeno de proposito. Ele E o bulkhead do nucleo transacional, e
+      # da ao ACID uma capacidade finita e mensuravel — que e exatamente o que
+      # a fila virtual existe para proteger.
+      POSTGRES_POOL_MAX: ${INVENTORY_POOL_MAX:-8}
+    command: ['node', 'dist/services/inventory/index.js']
+    ports:
+      - '${INVENTORY_PORT:-3002}:3002'
+
+  orders:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: orders
+      PORT: 3003
+      POSTGRES_DB: orders
+      POSTGRES_USER: orders_svc
+      POSTGRES_PASSWORD: orders_svc
+      POSTGRES_POOL_MAX: ${ORDERS_POOL_MAX:-8}
+    command: ['node', 'dist/services/orders/index.js']
+    ports:
+      - '${ORDERS_PORT:-3003}:3003'
+
+  payments:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: payments
+      PORT: 3004
+      POSTGRES_DB: payments
+      POSTGRES_USER: payments_svc
+      POSTGRES_PASSWORD: payments_svc
+    command: ['node', 'dist/services/payments/index.js']
+    ports:
+      - '${PAYMENTS_PORT:-3004}:3004'
+
+  realtime:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: realtime
+      PORT: 3005
+      POSTGRES_DB: postgres
+    command: ['node', 'dist/services/realtime/index.js']
+    ports:
+      - '${REALTIME_PORT:-3005}:3005'
+
+  # O "sistema externo". Sendo nosso, ele proprio expoe os controles de injecao
+  # de falha — o que dispensa o Toxiproxy e fica mais legivel na demonstracao.
+  psp-sandbox:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: psp-sandbox
+      PORT: 3010
+      POSTGRES_DB: postgres
+    command: ['node', 'dist/services/psp/index.js']
+    depends_on: []
+    ports:
+      - '${PSP_PORT:-3010}:3010'
+
+  # ---------------------------------------------------------------------------
+  # Ferramentas de operacao
+  #
+  # Rodam sob demanda (`docker compose run`), dentro da rede, para nao exigir
+  # nenhuma dependencia instalada na maquina de quem clona o repositorio.
+  # ---------------------------------------------------------------------------
+
+  tools:
+    <<: *service-base
+    profiles: ['tools']
+    environment:
+      <<: *service-env
+      SERVICE_NAME: tools
+      POSTGRES_DB: postgres
+      EDGE_URL: http://traefik:80
+      SEED_ROWS: ${SEED_ROWS:-40}
+      SEED_SEATS_PER_ROW: ${SEED_SEATS_PER_ROW:-200}
+      TRAEFIK_API: http://traefik:8080
+      TRAEFIK_DYNAMIC: /etc/traefik/dynamic.yml
+    volumes:
+      # Escrita: as ferramentas de deployment movem os pesos do canary.
+      - ./infra/traefik/dynamic.yml:/etc/traefik/dynamic.yml
+      # Leitura dos sumarios do k6, para a comparacao entre rodadas.
+      - ./docs/resultados:/resultados
+    command: ['node', '--version']
+    restart: 'no'
+    user: root
+
+  k6:
+    image: grafana/k6:0.54.0
+    profiles: ['tools']
+    restart: 'no'
+    environment:
+      EDGE_URL: http://traefik:80
+      K6_VUS: ${K6_VUS:-200}
+      K6_DURATION: ${K6_DURATION:-60s}
+      K6_EVENT_ID: ${K6_EVENT_ID:-show-do-seculo}
+    volumes:
+      - ./load:/scripts:ro
+      - ./docs/resultados:/resultados
+    entrypoint: ['k6']
+    command: ['version']
+
+volumes:
+  pgdata:
