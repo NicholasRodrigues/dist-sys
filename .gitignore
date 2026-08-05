@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.log
+
+# Certificados de rede local: uteis no build, nunca versionados.
+docker/ca/*.crt
+
+# Resultados de execucao dos testes, gerados por `make load`.
+docs/resultados/*.json
+docs/resultados/*.txt
