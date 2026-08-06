@@ -344,31 +344,45 @@ caminho que a Bilheteria já sabe executar.
 
 ## 9. Stack
 
-Exatamente a da documentação inicial. Sem alteração.
+A da Bilheteria, e não a da documentação inicial. É a mudança mais importante
+deste plano em relação ao rascunho, e a razão vale mais do que a escolha.
 
-| Componente | Escolha |
-|---|---|
-| Event API, Risk API, Risk Worker, Simulador | Python 3.12 + FastAPI + Pydantic |
-| Broker | RabbitMQ, com DLQ |
-| Persistência | PostgreSQL, com JSONB |
-| Painel Administrativo | Streamlit |
-| Execução | Docker Compose |
-| CI | GitHub Actions com Ruff e Pytest |
+| Componente | Rascunho | Construído |
+|---|---|---|
+| Event API, Risk API, Risk Worker, Simulador | Python 3.12 + FastAPI + Pydantic | **TypeScript + Fastify** |
+| Broker | RabbitMQ, com DLQ | **Redpanda (Kafka), com DLQ** |
+| Persistência | PostgreSQL, com JSONB | PostgreSQL, com JSONB |
+| Painel Administrativo | Streamlit | **HTML servido pelo `risk-api`** |
+| Execução | Docker Compose | Docker Compose |
+| CI | GitHub Actions com Ruff e Pytest | **GitHub Actions: tipos, unitários e a bateria inteira contra o sistema no ar** |
 
-A Bilheteria continua em TypeScript. **Isso é uma propriedade, não um problema:**
-dois sistemas em linguagens diferentes, integrados por contrato HTTP e mensageria,
-é a definição de sistema distribuído — e prova que o Anti-Corruption Layer faz
-trabalho de verdade.
+O argumento a favor de Python era bom e foi descartado por um argumento melhor.
+Ele dizia: dois sistemas em linguagens diferentes provam que o Anti-Corruption
+Layer faz trabalho de verdade. Mas a heterogeneidade de linguagem não é o que
+prova isso — **é a heterogeneidade de contrato.** E ela existe do mesmo jeito:
+a Bilheteria escreve `camelCase` sem timestamp, o Simulador escreve `snake_case`
+com timestamp sem fuso, e o motor não conhece nenhum dos dois formatos. O teste
+`risk-acl.test.ts` verifica que as duas origens produzem o mesmo evento interno.
+
+O que Python custaria, em compensação, é concreto: um segundo `Dockerfile`, um
+segundo gerenciador de dependências, um segundo conjunto de ferramentas de teste,
+e — o mais caro — **reescrever em Python** o tracer OTLP, o cliente HTTP com
+circuit breaker, o consumidor com DLQ e o emissor de métricas que já existem e já
+foram testados. Seriam duas implementações dos mesmos padrões, com o dobro da
+superfície de bug e nenhum ganho arquitetural.
+
+Redpanda no lugar de RabbitMQ pelo mesmo raciocínio: o barramento já está de pé,
+e a garantia que o motor precisa — **ordem por comprador** — é particionamento por
+chave, que é exatamente o que um log particionado oferece e uma fila AMQP não.
 
 ### Custo de recursos
 
-A Bilheteria são 15 contêineres; o Risk-Shield acrescenta 5 (RabbitMQ, Event API,
-Risk Worker, Risk API, Painel). O PostgreSQL é reaproveitado, com **bancos lógicos
-separados** e credenciais próprias — a fronteira entre os sistemas continua real.
+A Bilheteria são 15 contêineres; o Risk-Shield acrescenta **3**, e não 5: não há
+broker novo (o Redpanda é reaproveitado, com **tópico próprio**) nem contêiner de
+painel (o `risk-api` o serve). O PostgreSQL também é reaproveitado, com banco
+lógico e credenciais próprias — a fronteira entre os sistemas continua real.
 
-Total: **20 contêineres**. Para máquinas apertadas, um perfil enxuto do Compose sobe
-só o Risk-Shield mais o `edge` e o `orders`, deixando observabilidade e blue-green
-de fora.
+Total: **18 contêineres**, medidos.
 
 ---
 

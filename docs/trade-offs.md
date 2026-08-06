@@ -167,7 +167,8 @@ offline não permite.
 
 ## 11. Escopo cortado ao necessário, com as ausências declaradas
 
-**Ganho.** Catorze contêineres em vez de vinte, e uma demonstração ao vivo que cabe com folga na
+**Ganho.** Quinze contêineres em vez de vinte na bilheteria — dezoito com o antifraude da POC 2 —
+e uma demonstração ao vivo que cabe com folga na
 máquina de qualquer integrante — o que protege diretamente os 20% da nota que dependem de ela
 funcionar. Todo o esforço restante vai para o que a especificação cobra e para o que o domínio
 exige para estar correto.

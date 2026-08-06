@@ -76,8 +76,15 @@ barramento de eventos; Traefik como balanceador e mecanismo de canary e blue-gre
 com Prometheus, Grafana e Jaeger para observabilidade; k6 para os testes de carga; e um PSP PIX
 falso, escrito por nós, que expõe injeção de latência e erro para os testes de resiliência.
 
-Tudo executa em **Docker Compose**, que é o que o checklist da Seção 7 pede. São catorze
-contêineres no total.
+Tudo executa em **Docker Compose**, que é o que o checklist da Seção 7 pede.
+
+A POC 2 da Seção 4.2 — o **antifraude mínimo viável** — foi construída sobre este mesmo domínio,
+como um segundo sistema de três serviços (`risk-event-api`, `risk-worker`, `risk-api`) ligado à
+bilheteria por dois contratos estreitos: um tópico no barramento e uma consulta de status. Ver
+[`poc2/plano.md`](poc2/plano.md).
+
+São **dezoito contêineres** no total: quinze da bilheteria e três do antifraude. O PostgreSQL e o
+Redpanda são reaproveitados, com banco lógico e tópico próprios.
 
 ## Critérios de sucesso mensuráveis
 

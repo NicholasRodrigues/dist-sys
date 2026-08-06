@@ -64,7 +64,7 @@ raciocínio completo.
 
 | Tópico | Onde | Prova |
 |---|---|---|
-| Esteira de Pipeline, Build e Deployment | GitHub Actions: lint, teste, build e publicação de imagem | Pipeline verde |
+| Esteira de Pipeline, Build e Deployment | GitHub Actions (`.github/workflows/ci.yml`): tipos e unitários num estágio barato, e a bateria inteira contra os 18 contêineres no ar num segundo estágio | Pipeline verde; os logs dos serviços ficam anexados a cada execução |
 | Immutable Deployment | Imagens versionadas por digest, nunca `latest` | Rollback por digest |
 | Estratégia de Deployment | Documentada em [`adr/0010`](adr/) com o critério de escolha | Comparação das opções |
 | Blue-Green | Dois conjuntos do `catalog` com troca de peso no Traefik | Troca de tráfego e rollback demonstrados |

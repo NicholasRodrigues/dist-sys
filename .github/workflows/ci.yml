@@ -1,0 +1,87 @@
+# Esteira de integração contínua.
+#
+# Dois estágios, e a separação tem um motivo: o primeiro é barato e falha rápido
+# (tipos e unitários rodam em segundos, sem infraestrutura); o segundo sobe os
+# dezoito contêineres e executa a bateria inteira contra o sistema real.
+#
+# O segundo estágio é o que importa. Um CI que só roda testes unitários num
+# projeto de sistemas distribuídos verifica exatamente a parte que não é
+# distribuída — as garantias deste sistema (SAGA, idempotência, quarentena,
+# compensação com estorno) só existem quando há processos separados, rede no
+# meio e um banco de verdade.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  estatico:
+    name: Tipos e testes unitários
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Verificação de tipos
+        run: npx tsc -p tsconfig.json --noEmit
+
+      - name: Testes unitários
+        run: npx vitest run tests/unit
+
+  sistema:
+    name: Bateria completa contra o sistema no ar
+    runs-on: ubuntu-latest
+    needs: estatico
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sobe os dois sistemas
+        run: make up
+
+      - name: Ponta a ponta
+        run: make smoke
+
+      - name: Resiliência com falha injetada
+        run: make chaos
+
+      - name: Cenários do antifraude
+        run: make scenarios
+
+      - name: Portão antifraude no checkout
+        run: make risk-gate
+
+      - name: Invariantes
+        run: make invariants
+
+      # Sem `if: failure()`: os logs interessam mais quando algo quebra, mas
+      # tê-los sempre permite comparar uma execução vermelha com a verde
+      # anterior — que costuma ser o caminho mais curto para o diagnóstico.
+      - name: Logs dos serviços
+        if: always()
+        run: docker compose logs --tail=300 > logs.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-dos-servicos
+          path: logs.txt
+          retention-days: 7
+
+      - name: Derruba tudo
+        if: always()
+        run: make clean

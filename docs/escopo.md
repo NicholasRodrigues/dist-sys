@@ -89,8 +89,15 @@ Cada linha responde: o que era, quanto custava, o que se perde.
 | **Fingerprint de dispositivo e desafio de prova de trabalho** | Lógica de detecção e uma etapa a mais no fluxo do usuário | Parte do sabor da POC 2. Fica o **rate limiting por identidade e por IP**, que é o tópico da Seção 6 e é o que de fato contém abuso |
 | **Quarentena financeira, log de auditoria encadeado, SAST, DAST, varredura de segredos** | Cada um pequeno; somados, uma trilha | Bônus. Nenhum é exigido |
 
-**Contêineres: de cerca de vinte para catorze.** A demonstração ao vivo passa a caber com folga na
+**Contêineres: de cerca de vinte para quinze.** A demonstração ao vivo passa a caber com folga na
 máquina de qualquer integrante, e isso protege os 20% do videocast.
+
+O antifraude da POC 2 acrescentou depois **três** contêineres, e não cinco: não houve broker novo
+(o Redpanda foi reaproveitado com tópico próprio) nem contêiner de painel (o `risk-api` o serve).
+Total medido: **dezoito**.
+
+O fingerprint de dispositivo, cortado acima por ser "parte do sabor da POC 2", voltou justamente
+quando a POC 2 chegou — e é hoje um dos quatro fatores de detecção.
 
 ---
 

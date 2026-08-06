@@ -261,8 +261,9 @@ explicar por que aquilo transforma o sistema num gerador de falso positivo.
 ## Resultados medidos
 
 Os resultados de uma execução completa estão em
-[`resultados/`](resultados/README.md): 28 verificações ponta a ponta, 6 cenários
-de resiliência, 6 invariantes e a comparação de carga com e sem fila virtual.
+[`resultados/`](resultados/README.md): 59 testes unitários, 30 verificações ponta a
+ponta, 6 cenários de resiliência, 6 cenários de antifraude, 15 verificações do
+portão, 6 invariantes e a comparação de carga com e sem fila virtual.
 
 Resumo do que foi medido:
 

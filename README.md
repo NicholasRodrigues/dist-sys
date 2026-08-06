@@ -45,7 +45,8 @@ reforçado — é **protegido** por controle de admissão.
 **2. Um serviço só existe se tiver uma fronteira de consistência própria ou um
 perfil de escala próprio.** Todo o resto é módulo. O desenho original tinha dez
 serviços; a regra cortou para seis sem perder nenhum padrão
-([ADR-0001](docs/adr/0001-microsservicos.md)).
+([ADR-0001](docs/adr/0001-microsservicos.md)). A mesma regra produziu os três do
+antifraude — e nenhum a mais.
 
 ```mermaid
 flowchart LR
@@ -62,7 +63,17 @@ flowchart LR
     K --> RT["<b>realtime</b><br/>WebSocket"]
     K --> CAT
     RT --> U
+
+    GW -. "eventos de comportamento<br/>(assíncrono)" .-> REA["<b>risk-event-api</b><br/>ACL + publicação"]
+    REA --> KR(("tópico<br/>risk.events"))
+    KR --> RW["<b>risk-worker</b><br/>4 fatores · evidência · score"]
+    RW --> RA["<b>risk-api</b><br/>consulta + painel"]
+    GW == "pode comprar?<br/>(síncrono, com breaker)" ==> RA
+    ORD == "ainda pode?<br/>2× dentro da SAGA" ==> RA
 ```
+
+As setas grossas são o acoplamento síncrono, e são só duas. Tudo o que alimenta o
+antifraude é assíncrono: **a venda nunca espera pela detecção**, só pela decisão.
 
 Detalhamento completo, com os três níveis de C4, em
 [`docs/arquitetura.md`](docs/arquitetura.md).
@@ -85,9 +96,10 @@ Em cerca de um minuto:
 | Endereço | O quê |
 |---|---|
 | http://localhost:8080/ | Interface: mapa de assentos ao vivo, fila, compra, portaria |
-| http://localhost:16686 | Jaeger — o trace da SAGA, 25 spans atravessando 5 serviços |
+| http://localhost:3022/ | **Painel do antifraude** — scores, evidências em texto, pesos e limiar |
+| http://localhost:16686 | Jaeger — o trace de uma compra, 43 spans atravessando os 10 serviços |
 | http://localhost:3030/d/bilheteria | Grafana — latências, fila, circuit breakers |
-| http://localhost:9090 | Prometheus |
+| http://localhost:9090 | Prometheus — 12 alvos, em dois jobs |
 | http://localhost:8081 | Traefik — roteamento e pesos |
 
 ### Todos os comandos
@@ -300,7 +312,8 @@ substitui rodar:
 **O que foi descartado.** O plano inicial tinha Kubernetes, mTLS, OPA, Cosign,
 criptografia pós-quântica, Keycloak, Debezium, Unleash e Toxiproxy. A releitura
 da especificação mostrou que nada disso era exigido — o checklist pede "Docker
-Compose ou equivalente". O escopo caiu de ~20 para 14 contêineres.
+Compose ou equivalente". O escopo da bilheteria caiu de ~20 para 15 contêineres;
+o antifraude da POC 2 acrescentou 3, chegando a 18.
 
 ---
 
