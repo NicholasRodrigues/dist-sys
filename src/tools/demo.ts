@@ -222,6 +222,72 @@ async function main(): Promise<void> {
   nota(`${ledger.body.entries} lancamentos no ledger, soma = ${ledger.body.sumCents} centavos.`);
   nota('Uma consulta de uma linha verifica a consistencia financeira do sistema inteiro.');
 
+  await pausa();
+
+  // -------------------------------------------------------------------------
+  titulo(8, 'O antifraude decide, e explica por que');
+  const alvo = `demo-cambista-${Date.now().toString(36)}`;
+
+  // Um bot: nenhuma leitura do mapa, cadencia de metronomo.
+  const eventos = [];
+  const t0 = Date.now() - 30_000;
+  const ctx = {
+    show_id: `demo-${alvo}`,
+    device_fingerprint: `dev-${alvo}`,
+    ip_address: '198.51.100.200',
+  };
+  eventos.push({ event_type: 'QUEUE_JOIN', buyer_id: alvo, ...ctx, timestamp: new Date(t0).toISOString().replace('Z', '') });
+  eventos.push({ event_type: 'QUEUE_ADMITTED', buyer_id: alvo, ...ctx, timestamp: new Date(t0 + 300).toISOString().replace('Z', '') });
+  for (let i = 0; i < 14; i++) {
+    eventos.push({
+      event_type: 'CHECKOUT_ATTEMPT',
+      buyer_id: alvo,
+      ...ctx,
+      seat_id: `PISTA-${i + 1}`,
+      timestamp: new Date(t0 + 600 + i * 300).toISOString().replace('Z', ''),
+    });
+  }
+
+  await api('/events/batch', {
+    base: urls.riskEventApi,
+    method: 'POST',
+    body: JSON.stringify({ events: eventos }),
+  });
+  nota(`${eventos.length} eventos de comportamento publicados para ${alvo}.`);
+  nota('Nenhuma leitura do mapa, e 300 ms exatos entre cada tentativa.');
+
+  let risco: { score: number; status: string; topFactors: { points: number; explanation: string }[] } | undefined;
+  for (let i = 0; i < 40; i++) {
+    const r = await api<typeof risco>(`/risk/status/${alvo}`, { base: urls.riskApi });
+    if (r.body && r.body.status === 'QUARANTINED') { risco = r.body; break; }
+    await pausa(400);
+  }
+
+  if (risco) {
+    nota(`Score ${risco.score.toFixed(1)} — ${risco.status}. E o motivo, em portugues:`);
+    for (const f of risco.topFactors) nota(`   ${f.points.toFixed(1).padStart(5)} pts  ${f.explanation}`);
+  } else {
+    nota('O antifraude ainda nao concluiu a avaliacao deste comprador.');
+  }
+  await pausa();
+
+  // -------------------------------------------------------------------------
+  titulo(9, 'A decisao do antifraude muda a venda');
+  const bloqueado = await comprar(alvo);
+  if (bloqueado.compra.status === 403) {
+    nota(`Checkout recusado: HTTP 403 — ${(bloqueado.compra.body as any).detail}`);
+    nota('Nenhum assento foi consumido e nenhum pedido foi criado: o bloqueio e antes da SAGA.');
+  } else {
+    nota(`Checkout respondeu ${bloqueado.compra.status} (verifique risk_check_mode).`);
+  }
+
+  await api(`/risk/buyers/${alvo}/release`, {
+    base: urls.riskApi,
+    method: 'POST',
+    body: JSON.stringify({ reason: 'fim da demonstracao', actor: 'apresentador' }),
+  });
+  nota('Liberado pelo painel. A quarentena entra sozinha por score, mas so sai por decisao humana.');
+
   // -------------------------------------------------------------------------
   console.log('\n\n  ' + '='.repeat(74));
   console.log('  Fim do roteiro.');
@@ -230,6 +296,10 @@ async function main(): Promise<void> {
   console.log(`   - o trace da SAGA no Jaeger        http://localhost:16686`);
   console.log(`   - os paineis no Grafana            http://localhost:3030/d/bilheteria`);
   console.log(`   - o mapa de assentos ao vivo       http://localhost:8080/`);
+  console.log(`   - o painel do antifraude           http://localhost:3022/`);
+  console.log('');
+  console.log('  E rode `make scenarios`: os seis cenarios, com os dois falsos');
+  console.log('  positivos que o sistema deve deixar passar.');
   console.log('');
 }
 

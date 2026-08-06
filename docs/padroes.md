@@ -20,14 +20,16 @@ raciocínio completo.
 | Circuit Breaker | Clientes de `payments`, `inventory` e do PSP | PSP falso adiciona latência; breaker abre e fecha, visível no Grafana |
 | Retry Pattern e DLQ | Consumidores com backoff exponencial e *parking lot* | Mensagem envenenada vai para a DLQ e é reprocessada por comando |
 | Bulkhead / Isolation | Pools de conexão separados por dependência; `realtime` isolado do núcleo | Saturação do `realtime` não afeta o checkout |
-| Event Sourcing | Ledger do `payments` é append-only; a máquina de estados da SAGA guarda cada transição | Saldo reconstruído a partir dos lançamentos |
+| Event Sourcing | Ledger do `payments` é append-only; a SAGA guarda cada transição; `risk_evidence` é append-only e o score é **derivado** dela | Saldo reconstruído a partir dos lançamentos; mudar um peso no painel re-deriva o score de todos sem reprocessar um evento sequer |
 | Event Driven Architecture | Todo o caminho assíncrono, sobre Redpanda | Diagrama de fluxo com contratos de evento versionados |
 | Choreography | Read model, notificação e presença reagem a eventos sem orquestrador | Novo consumidor entra sem alterar o produtor |
 | Strong vs Eventual Consistency | Fronteira explícita entre núcleo ACID e periferia | Janela de convergência medida sob carga |
 | ACID | Reserva e confirmação de assento em transação única | 200 requisições concorrentes no mesmo assento |
 | Idempotency | `Idempotency-Key` do cliente até o ledger | Requisição repetida produz exatamente um efeito |
-| Anti-corruption Layer | `payments` isola o contrato do PSP atrás de um modelo interno | Troca do PSP falso por outro sem tocar em `orders` |
+| Anti-corruption Layer | `payments` isola o contrato do PSP; `riskEvents.ts` normaliza dois formatos externos (Bilheteria e Simulador) num só modelo interno | Troca do PSP falso sem tocar em `orders`; `risk-acl.test.ts` prova que `camelCase` e `snake_case` produzem o mesmo evento |
 | Tight vs Loose Coupling | Síncrono só onde a resposta é necessária para continuar | Adicionar consumidor não altera a latência do checkout |
+| Feature Flags | `risk_check_mode` decide o que acontece com a venda quando o antifraude cai; pesos e limiar lidos a cada mensagem | `make risk-gate` fase 2: mesma instância, comportamento oposto, sem reinício |
+| Compensating Transaction | Quarentena que chega **depois** do pagamento força estorno + devolução do assento | `make risk-gate`: `risk.post-payment` → `compensate.refund` → `compensate.release` |
 
 ## 6.3 Desempenho
 
@@ -37,7 +39,7 @@ raciocínio completo.
 | Cache-Aside Pattern | `catalog` lê do cache, cai para o banco e repopula | Taxa de acerto no painel do Grafana |
 | SYNC vs ASYNC | Compra é síncrona; read model, presença e notificação são assíncronos | Latência do checkout não cresce ao adicionar consumidores |
 | Streaming vs Messaging | Redpanda como log de eventos; fila de trabalho para notificação | Justificativa documentada da diferença de uso |
-| CQRS | Escrita no `inventory`, leitura no `catalog`, modelos distintos | Schema de leitura difere do de escrita |
+| CQRS | Escrita no `inventory`, leitura no `catalog`; no Risk-Shield, `risk-worker` escreve evidência e `risk-api` lê a projeção `buyer_risk_summary` | Schema de leitura difere do de escrita; a projeção é atualizada na mesma transação da evidência |
 | Desnormalização / Materialized View | Mapa de assentos pré-computado por sessão | Uma leitura serve a tela inteira |
 | Polyglot Persistence | Postgres para transacional, Redis para efêmero, Redpanda como log | Cada escolha justificada pelo padrão de acesso |
 | Database-per-service | Bancos lógicos isolados por credencial, sem query cruzando fronteira | Nenhuma query atravessa serviço |

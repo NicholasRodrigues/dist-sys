@@ -142,23 +142,67 @@ Nenhuma ação irreversível é tomada por um score.
 
 ## 4. Cenários do simulador
 
-Os cinco cenários da documentação inicial, traduzidos. Cada um tem faixa de score
-esperada e estado final — e o pipeline de CI os valida automaticamente, como a
-Seção 10 do documento já previa.
+Seis cenários, validados a cada `make scenarios`. **Dois deles são compradores
+legítimos que exibem sinais suspeitos de verdade, e a asserção é que NÃO sejam
+bloqueados.** Um teste antifraude que só tem casos de fraude não mede precisão —
+mede sensibilidade, e qualquer regra suficientemente paranoica passa.
 
-| # | Cenário | Comportamento | Score esperado | Estado final |
-|---|---|---|---|---|
-| 1 | **Comprador normal** | Entra na fila, espera, lê o mapa, escolhe, compra 1 a 4 ingressos | < 40 | livre |
-| 2 | **Bot** | Checkout em milissegundos, sem ler o mapa, cadência constante | > 85 | quarentena |
-| 3 | **Multi-conta** | 20 contas, mesmo device, mesmo IP, comprando o mesmo setor | > 85 | quarentena |
-| 4 | **Conluio coordenado** | 10 contas distintas levando assentos adjacentes em 5 segundos | > 85 | quarentena |
-| 5 | **Multi-dispositivo** | 1 conta, 15 fingerprints diferentes, compras em paralelo | 70 a 85 | quarentena |
-| 6 | **Falso positivo** | Família comprando 6 lugares juntos do mesmo IP e device | < 70 | **livre** |
+| # | Cenário | Comportamento | Faixa esperada | Medido | Estado |
+|---|---|---|---|---|---|
+| C1 | **Comprador legítimo** | Entra na fila, lê o mapa 3×, espera, compra | 0 a 20 | **0,0** | livre |
+| C2 | **Bot solitário** | 14 tentativas a cada 300 ms exatos, sem ler o mapa | 70 a 85 | **75,0** | quarentena |
+| C3 | **Fazenda de contas** | 20 contas, 1 device, 1 IP, 3 cartões, disparando juntas | 90 a 100 | **100,0** | quarentena |
+| C4 | **Conluio distribuído** | 12 contas, cada uma com device e IP próprios, mesmo setor em segundos | 80 a 100 | **91,9** | quarentena |
+| C5 | **Rotação de fingerprint** | 1 conta em 15 devices, mas lendo o mapa e comprando em ritmo humano | 25 a 60 | **43,6** | **livre** |
+| C6 | **Família** | 4 contas, mesmo notebook, mesmo Wi-Fi, mesmo cartão, 6 lugares | 5 a 50 | **22,5** | **livre** |
 
-O cenário 6 não estava na documentação inicial e vale acrescentar: ele é o que
-prova que as regras **discriminam**, em vez de só acusar. Um teste antifraude que
-só tem casos de fraude não mede precisão — mede sensibilidade, e qualquer regra
-suficientemente paranoica passa.
+### Três correções em relação ao rascunho deste plano
+
+O conjunto acima não é o que estava escrito aqui antes. Três cenários mudaram, e
+os motivos valem mais do que a tabela.
+
+**O "Bot" era esperado acima de 85, e fica em 75.** Um bot solitário — uma conta,
+um dispositivo, um IP — é *estruturalmente incapaz* de disparar os dois fatores
+contextuais: não há com quem correlacionar. O máximo que ele alcança são os dois
+fatores comportamentais. Isso obrigou a reescrever os pesos para que dois fatores
+bastassem (ADR-0013); com os pesos originais, somando 100, o bot solitário
+chegava a 50 e passava sempre. A correção não foi afrouxar o limiar — foi
+descobrir que o modelo era cego a ele por construção.
+
+**O "Conluio" ganhou automação.** Doze contas com identidades genuinamente
+distintas, comprando assentos vizinhos em ritmo humano, valem 24,5 pontos e
+passam — e está certo que passem: é indistinguível de um grupo de amigos
+combinando pelo WhatsApp, ou de um setor popular abrindo numa venda relâmpago.
+O que torna o cenário detectável é a quadrilha comprar **sem ler o mapa e em
+milissegundos**. O cenário C4 é, portanto, uma frota distribuída que evadiu
+dispositivo e IP mas não conseguiu evadir o comportamento — que é a lição mais
+interessante do conjunto.
+
+**O "Multi-dispositivo" virou falso positivo.** Uma conta em 15 *fingerprints*
+com navegação humana era esperada em quarentena; ela fica em 43,6 e passa. O fator
+de dispositivo satura em severidade 1, mas um fator sozinho vale 35 pontos — metade
+do limiar. É de propósito: navegadores com proteção contra rastreamento randomizam
+*fingerprint* a cada aba, e uma rede corporativa produz o mesmo efeito. Acusar por
+associação sozinha é como o antifraude vira gerador de prejuízo. O cenário mudou de
+lado, e o sistema fica melhor por isso.
+
+O limiar de 70 cai entre 43,6 e 75,0. A folga é de mais de 30 pontos para os dois
+lados, e o caso mais apertado — o bot solitário, a 5 pontos — é justamente o que
+deve ser apertado.
+
+### O que o próprio teste de fumaça revelou
+
+Ao ligar a integração, a bateria de fumaça da Bilheteria foi **bloqueada pelo
+antifraude**: `53 tentativas de compra nos ultimos 10 minutos`. O detector estava
+certo. O gerador de carga é que não é um cliente — a verificação de contenção
+precisa de 40 contas disputando o mesmo assento e a de idempotência dispara 50
+requisições idênticas em paralelo, tudo do mesmo endereço.
+
+A conclusão é operacional e vale registrar: geradores de carga e sondas sintéticas
+precisam de um caminho declarado que não passe pelo antifraude, senão a própria
+monitoração acorda o plantão. Aqui isso é a *flag* `risk_check_mode=disabled`, que
+a bateria de fumaça liga no início e devolve ao padrão no fim — e o portão tem
+teste próprio, `make risk-gate`, mais forte do que uma asserção incidental.
 
 ---
 

@@ -130,7 +130,14 @@ export async function request<T = unknown>(url: string, opts: RequestOptions): P
           const res = await fetch(url, {
             method,
             headers: {
-              'content-type': 'application/json',
+              // `content-type` SO quando ha corpo.
+              //
+              // Anunciar `application/json` sem enviar nada faz o Fastify do
+              // outro lado responder 400 ("Body cannot be empty when
+              // content-type is set to application/json"). Isso quebrava toda
+              // chamada POST sem corpo — entre elas o estorno da compensacao,
+              // que ficava retentando um erro que jamais poderia dar certo.
+              ...(opts.body === undefined ? {} : { 'content-type': 'application/json' }),
               ...(traceparent() ? { traceparent: traceparent()! } : {}),
               ...(opts.headers ?? {}),
             },

@@ -1,15 +1,18 @@
-# Bilheteria — Plataforma Distribuída de Venda de Ingressos
+# Bilheteria + Risk-Shield — Venda de Ingressos com Antifraude
 
 > **Projeto Final — Engenharia de Sistemas Distribuídos 2026.1**
 > Tema próprio (Seção 3): venda de ingressos sob pico de demanda (*flash sale*).
+> **POC 2 (Seção 4.2): antifraude mínimo viável**, aplicado ao domínio da bilheteria.
 
-Sistema completo e funcional: **6 microsserviços em 14 contêineres**, executando
-inteiramente em Docker Compose. Um comando sobe tudo.
+Dois sistemas independentes que se integram por dois contratos estreitos:
+**9 microsserviços em 18 contêineres**, executando inteiramente em Docker Compose.
+Um comando sobe tudo.
 
 ```bash
-make up      # sobe o sistema e carrega 40.000 assentos de demonstração
-make test    # unitários + ponta a ponta + resiliência
-make demo    # roteiro guiado da apresentação
+make up         # sobe os dois sistemas e carrega 40.000 assentos de demonstração
+make test       # unitários + ponta a ponta + resiliência + antifraude
+make scenarios  # os 6 cenários de fraude, com 2 falsos positivos que devem passar
+make demo       # roteiro guiado da apresentação
 ```
 
 ---
@@ -94,9 +97,13 @@ Em cerca de um minuto:
 | Comando | O que faz |
 |---|---|
 | `make up` / `make down` / `make clean` | Sobe, derruba, apaga volumes |
-| `make test` | Unitários + ponta a ponta + resiliência |
-| `make smoke` | 28 verificações ponta a ponta |
+| `make test` | A bateria completa: unitários, fumaça, caos, antifraude e invariantes |
+| `make smoke` | 30 verificações ponta a ponta |
 | `make chaos` | 6 cenários com falha injetada |
+| `make scenarios` | Os 6 cenários do antifraude, com 2 falsos positivos |
+| `make risk-gate` | O portão antifraude no checkout, com o `risk-api` parado no meio |
+| `make risk-config` | Pesos, limiar e estatísticas do antifraude |
+| `make risk-reset` | Zera eventos e scores do antifraude, preservando configuração |
 | `make invariants` | As 6 consultas que não podem retornar linha |
 | `make load` | Teste de carga (`K6_VUS`, `K6_DURATION`) |
 | `make load-without-queue` / `make load-with-queue` / `make compare` | O gráfico da apresentação |
@@ -138,6 +145,36 @@ A fila não aumenta a capacidade — ela **escolhe o ponto de operação**. Sem 
 espera não desaparece: fica escondida dentro de um checkout lento, onde o usuário
 não entende o que está acontecendo.
 
+**Antifraude** (`make scenarios`, 6/6)
+
+| Cenário | Score | Resultado |
+|---|---|---|
+| Comprador legítimo | 0,0 | livre |
+| Família: 4 contas, 1 notebook, 1 cartão | 22,5 | **livre** |
+| 1 conta em 15 dispositivos, ritmo humano | 43,6 | **livre** |
+| Bot solitário: 14 tentativas a cada 300 ms | 75,0 | quarentena |
+| Conluio: 12 contas, 12 IPs, mesmo setor em segundos | 91,9 | quarentena |
+| Fazenda: 20 contas, 1 dispositivo, 1 IP | 100,0 | quarentena |
+
+Os dois em negrito são o teste que importa: um antifraude que quarentena todo mundo
+acerta os cambistas e é inútil. O limiar de 70 cai entre 43,6 e 75,0.
+
+Os pesos codificam uma regra de decisão, não um chute: **nenhum fator sozinho
+quarentena; dois fatores quaisquer no máximo, sim** — verificado por teste unitário
+([ADR-0013](docs/adr/0013-pesos-e-limiar-do-score.md)).
+
+**Integração dos dois sistemas** (`make risk-gate`, 15/15 em 3 fases)
+
+- Comprador em quarentena → **HTTP 403 com o motivo em texto**, sem consumir assento
+- Quarentena que chega **depois do pagamento** → a SAGA compensa com **estorno**
+- Com o `risk-api` realmente parado: `fail_open` vende, `fail_closed` bloqueia, e a
+  chave vira em tempo de execução sem reiniciar nada
+- Circuit breaker mantém o checkout em **268 ms** com a dependência morta
+
+O teste do portão encontrou **dois defeitos reais na Bilheteria**, invisíveis até então
+porque nenhum teste havia percorrido a compensação com estorno
+([ADR-0016](docs/adr/0016-risco-dentro-da-saga.md)).
+
 ---
 
 ## Documentação
@@ -148,7 +185,8 @@ não entende o que está acontecendo.
 | [`docs/arquitetura.md`](docs/arquitetura.md) | C4 níveis 1, 2 e 3, catálogo de serviços, stack |
 | [`docs/padroes.md`](docs/padroes.md) | Cada tópico da Seção 6 → onde vive → como provar |
 | [`docs/escopo.md`](docs/escopo.md) | O que entra, o que fica de fora, e por quê |
-| [`docs/plano-de-testes.md`](docs/plano-de-testes.md) | Invariantes, carga, resiliência, integração |
+| [`docs/plano-de-testes.md`](docs/plano-de-testes.md) | Invariantes, carga, resiliência, antifraude, integração |
+| [`docs/poc2/plano.md`](docs/poc2/plano.md) | **POC 2 — antifraude:** mapeamento de domínio, C4, cenários e o que mudou do rascunho |
 | [`docs/resultados/`](docs/resultados/README.md) | **Resultados medidos** |
 | [`docs/trade-offs.md`](docs/trade-offs.md) | 11 decisões com custo e condição de reversão |
 | [`docs/roadmap.md`](docs/roadmap.md) | Fases, trilhas e roteiro do videocast |
@@ -161,17 +199,23 @@ não entende o que está acontecendo.
 ```
 src/
   shared/          Tracing OTLP, circuit breaker, outbox, idempotência, JWT
+    riskEvents.ts  Camada de anticorrupção: dois formatos externos, um interno
+    riskClient.ts  A fronteira entre os dois sistemas, e a política de falha
   services/
-    edge/          Gateway, fila virtual, rate limit, load shedding
+    edge/          Gateway, fila virtual, rate limit, load shedding, portão de risco
     catalog/       Read model CQRS com cache-aside
     inventory/     Dono do assento — ACID, hold com TTL, reaper
-    orders/        SAGA, emissão do QR, check-in
+    orders/        SAGA, emissão do QR, check-in, verificação de risco em 2 pontos
     payments/      Ledger de dupla entrada, ACL do PSP
     realtime/      Fan-out por WebSocket
     psp/           PIX falso com injeção de falha
+    risk-event-api/  Recebe, normaliza e publica eventos de comportamento
+    risk-worker/     Motor de scoring multifatorial — o lado de comando do CQRS
+    risk-api/        Consulta de risco e painel administrativo — o lado de consulta
   migrations/      Um banco lógico por serviço
-  tools/           seed, smoke, chaos, invariants, compare, deploy, demo
-tests/unit/        28 testes
+  tools/           seed, smoke, chaos, invariants, simulator, risk-gate, risk, deploy, demo
+tests/unit/        59 testes
+web/admin.html     Painel do antifraude
 load/              Cenários k6
 infra/             Traefik, Prometheus, Grafana
 ```

@@ -170,6 +170,41 @@ async function main(): Promise<void> {
   await fetch(`${urls.psp}/admin/reset`, { method: 'POST' }).catch(() => undefined);
 
   // ------------------------------------------------------------------
+  // O portao do antifraude sai do caminho durante esta bateria.
+  //
+  // Nao e conveniencia: este arquivo testa a BILHETERIA, e o trafego que ele
+  // gera e, por construcao, indistinguivel de fraude. A verificacao de
+  // contencao precisa de 40 contas disputando o mesmo assento, a de
+  // idempotencia dispara 50 requisicoes identicas em paralelo, e tudo sai do
+  // mesmo endereco. Um antifraude que NAO quarentenasse isso estaria quebrado.
+  //
+  // Descobrimos isso da pior maneira: ao ligar a integracao, o proprio teste de
+  // fumaca foi bloqueado com "53 tentativas de compra nos ultimos 10 minutos".
+  // O detector estava certo; o gerador de carga e que nao e um cliente.
+  //
+  // Deixar acoplado tornaria qualquer falha da Bilheteria inatribuivel — nunca
+  // se saberia se quebrou o checkout ou se o teste anterior sujou o score. O
+  // portao tem teste proprio, e mais forte: `make risk-gate`.
+  //
+  // Os eventos de comportamento continuam sendo publicados; so a CONSULTA
+  // bloqueante sai de cena.
+  section('Antifraude (fora do caminho durante o teste)');
+
+  await check('desliga a consulta de risco no checkout', async () => {
+    const res = await http<Record<string, string>>('/api/admin/flags', {
+      method: 'POST',
+      body: JSON.stringify({ risk_check_mode: 'disabled' }),
+    });
+    assert(res.status === 200, `esperava 200, veio ${res.status}`);
+    const conferida = await http<Record<string, string>>('/api/admin/flags');
+    assert(
+      conferida.body.risk_check_mode === 'disabled',
+      `flag ficou em ${conferida.body.risk_check_mode}`,
+    );
+    return 'risk_check_mode=disabled; o portao e verificado em `make risk-gate`';
+  });
+
+  // ------------------------------------------------------------------
   section('Autenticacao (JWT na borda)');
 
   let token = '';
@@ -482,6 +517,25 @@ async function main(): Promise<void> {
     const seen = messages.filter((m) => m.includes(seat));
     assert(seen.length > 0, `nenhuma mensagem sobre ${seat} em ${messages.length} recebidas`);
     return `${seen.length} atualizacao(oes) recebida(s) para ${seat}`;
+  });
+
+  // ------------------------------------------------------------------
+  section('Antifraude (restauracao)');
+
+  await check('devolve a consulta de risco ao estado padrao', async () => {
+    // Sem isto, uma bateria de fumaca deixaria o sistema com o antifraude
+    // desligado — e a proxima pessoa a demonstrar o projeto descobriria
+    // sozinha, do jeito ruim.
+    await http('/api/admin/flags', {
+      method: 'POST',
+      body: JSON.stringify({ risk_check_mode: 'fail_open' }),
+    });
+    const conferida = await http<Record<string, string>>('/api/admin/flags');
+    assert(
+      conferida.body.risk_check_mode === 'fail_open',
+      `flag ficou em ${conferida.body.risk_check_mode}`,
+    );
+    return 'risk_check_mode=fail_open';
   });
 
   // ------------------------------------------------------------------

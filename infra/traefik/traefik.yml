@@ -12,6 +12,26 @@
 entryPoints:
   web:
     address: ':80'
+    # Preserva o X-Forwarded-For de quem vem da rede interna.
+    #
+    # Por padrao o Traefik SOBRESCREVE esse cabecalho com o IP de quem conectou,
+    # o que e o comportamento correto para trafego vindo da internet — senao
+    # qualquer cliente forjaria o proprio endereco.
+    #
+    # Aqui isso quebrava o antifraude de um jeito silencioso: todo o trafego
+    # gerado dentro do Compose chegava com o mesmo endereco, a regra de
+    # correlacao via 127 contas num unico IP e passava a marcar todo mundo por
+    # associacao. O fator ficava inutil justamente na demonstracao.
+    #
+    # Declarar as faixas privadas como confiaveis e o que um proxy real faz
+    # quando sabe que ha um balanceador na frente dele. Note que sao FAIXAS
+    # especificas, e nao `insecure: true`: continua sendo impossivel forjar o
+    # cabecalho de fora.
+    forwardedHeaders:
+      trustedIPs:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
 
 providers:
   file:

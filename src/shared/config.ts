@@ -55,6 +55,8 @@ export const config = {
   paymentsUrl: env('PAYMENTS_URL', 'http://localhost:3004'),
   realtimeUrl: env('REALTIME_URL', 'http://localhost:3005'),
   pspUrl: env('PSP_URL', 'http://localhost:3010'),
+  riskEventApiUrl: env('RISK_EVENT_API_URL', 'http://localhost:3020'),
+  riskApiUrl: env('RISK_API_URL', 'http://localhost:3022'),
 
   /** Duracao do hold do assento. Parametro que so se acerta medindo. */
   holdTtlSeconds: envInt('HOLD_TTL_SECONDS', 600),

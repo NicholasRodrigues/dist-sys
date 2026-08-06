@@ -130,11 +130,99 @@ Rodar: `make chaos`. A injeção de falha vem do próprio PSP falso, que expõe 
 
 ---
 
+## Antifraude (POC 2)
+
+Duas baterias, com propósitos distintos. A primeira mede se o motor **classifica**;
+a segunda, se a classificação **muda a venda**.
+
+### A1 — Cenários de comportamento (`make scenarios`)
+
+Seis cenários sintéticos, cada um com faixa de score esperada e estado final. **Dois
+são compradores legítimos com sinais suspeitos reais, e a asserção é que passem** —
+um teste antifraude só com casos de fraude mede sensibilidade, não precisão.
+
+| # | Cenário | Faixa | Medido | Estado | Passou |
+|---|---|---|---|---|---|
+| C1 | Comprador legítimo | 0 a 20 | 0,0 | livre | ✔ |
+| C2 | Bot solitário | 70 a 85 | 75,0 | quarentena | ✔ |
+| C3 | Fazenda de 20 contas | 90 a 100 | 100,0 | quarentena | ✔ |
+| C4 | Conluio distribuído (12 contas, 12 IPs) | 80 a 100 | 91,9 | quarentena | ✔ |
+| C5 | Rotação de *fingerprint*, ritmo humano | 25 a 60 | 43,6 | **livre** | ✔ |
+| C6 | Família (4 contas, 1 device, 1 cartão) | 5 a 50 | 22,5 | **livre** | ✔ |
+
+O limiar de 70 cai entre 43,6 e 75,0 — folga de mais de 30 pontos para os dois lados.
+
+O simulador envia cada cenário em **duas ondas**, com barreira entre elas: o tópico é
+particionado por comprador, o que garante ordem dentro de uma conta mas não entre
+contas, e as regras de dispositivo e correlação olham o conjunto. A barreira garante
+que a compra decisiva de cada conta seja julgada com o contexto completo — sem ela o
+teste mediria a corrida entre o harness e o consumidor.
+
+### A2 — Portão no checkout (`make risk-gate`)
+
+Roda em três fases, porque a pergunta central — *se o antifraude cai, a venda para?* —
+só pode ser respondida com o antifraude realmente no chão. O alvo do Makefile executa
+`docker compose stop risk-api` no meio da bateria.
+
+| Fase | Verificação | Resultado |
+|---|---|---|
+| 1 | Comprador sem histórico compra normalmente | HTTP 201 |
+| 1 | A compra alimenta o antifraude pelo caminho assíncrono | 3 eventos registrados |
+| 1 | Comprador em quarentena é barrado, com o motivo em texto | HTTP 403 |
+| 1 | O bloqueio **não** consome assento nem cria pedido | 0 pedidos |
+| 1 | `disabled` desliga a consulta sem apagar a marcação | vendeu, quarentena intacta |
+| 1 | Liberação manual devolve o direito de comprar | HTTP 201 |
+| 1 | **Quarentena em pleno voo: a SAGA compensa com estorno** | *refund* + *release* |
+| 2 | `fail_open` com o antifraude no chão | HTTP 201 |
+| 2 | `fail_closed` com o antifraude no chão | HTTP 403 |
+| 2 | Alternância de modo em tempo de execução | sem reinício |
+| 2 | Circuit breaker impede que `fail_open` vire espera por *timeout* | **268 ms** |
+| 3 | A quarentena sobreviveu à indisponibilidade | HTTP 403 |
+| 3 | O breaker fecha sozinho quando a dependência volta | consultas atendidas |
+
+**15/15.** O cenário em negrito é o mais caro e o mais informativo: com 2 s de latência
+injetada no PSP, a quarentena é aplicada durante a captura do pagamento, e a SAGA
+compensa com estorno em vez de só liberar o assento.
+
+### Dois defeitos reais encontrados por A2
+
+Nenhum teste anterior havia levado a SAGA ao caminho de estorno, e ele estava quebrado:
+
+1. O cliente HTTP anunciava `content-type: application/json` em requisições **sem
+   corpo**, e o Fastify respondia 400. Todo `POST` sem corpo falhava — inclusive
+   `POST /charges/:sagaId/refund`. Corrigido, com teste de regressão em
+   `tests/unit/breaker.test.ts`.
+2. A compensação retentava **qualquer** erro indefinidamente. Com o 400 acima, a SAGA
+   girou 40 segundos repetindo `payments respondeu 400` e teria girado para sempre.
+   Corrigido com teto de tentativas e tratamento explícito de erro permanente.
+
+Detalhes em [ADR-0016](adr/0016-risco-dentro-da-saga.md).
+
+### O teste de fumaça foi quarentenado
+
+Ao ligar a integração, a bateria de fumaça da Bilheteria passou a ser bloqueada:
+`53 tentativas de compra nos ultimos 10 minutos`. O detector estava certo — a
+verificação de contenção usa 40 contas disputando o mesmo assento e a de idempotência
+dispara 50 requisições idênticas, tudo do mesmo endereço.
+
+A lição é operacional: geradores de carga e sondas sintéticas precisam de um caminho
+declarado fora do antifraude, senão a própria monitoração acorda o plantão. Aqui isso
+é `risk_check_mode=disabled`, que `make smoke` liga no início e devolve ao padrão no
+fim, com asserção nos dois passos.
+
+O mesmo diagnóstico revelou um problema de configuração que teria arruinado a
+demonstração: o Traefik **sobrescrevia** o `X-Forwarded-For`, então todo o tráfego
+local chegava com um único endereço e a regra de correlação via 127 contas num só IP —
+marcando todo mundo por associação. Corrigido declarando as faixas privadas como
+confiáveis em `infra/traefik/traefik.yml`.
+
+---
+
 ## Integração
 
 Exigido nominalmente pelo checklist. O teste ponta a ponta (`make smoke`) **é** a bateria de
-integração: ele roda contra o sistema completo no ar — Postgres, Redis e Redpanda reais, seis
-serviços em processos separados — e verifica 28 propriedades, incluindo as consultas de invariante
+integração: ele roda contra o sistema completo no ar — Postgres, Redis e Redpanda reais, nove
+serviços em processos separados — e verifica 30 propriedades, incluindo as consultas de invariante
 nos quatro bancos.
 
 | # | Coberto por |
@@ -146,8 +234,17 @@ nos quatro bancos.
 | I5 | Read model do `catalog` reflete as vendas |
 | I6 | QR válido, forjado e reapresentado |
 
-Os testes **unitários** (`make test-unit`, 28 testes) cobrem o que não precisa de infraestrutura:
-JWT, assinatura do ingresso, classificação de erro e circuit breaker.
+| I7 | Portão antifraude no checkout, com o `risk-api` parado (`make risk-gate`) |
+| I8 | Compensação com estorno disparada por quarentena pós-pagamento |
+
+Os testes **unitários** (`make test-unit`, 59 testes) cobrem o que não precisa de infraestrutura:
+JWT, assinatura do ingresso, classificação de erro, circuit breaker, a camada de anticorrupção do
+antifraude e as propriedades do modelo de score.
+
+Os testes de score merecem nota: eles não verificam se a soma está certa — verificam se as
+**propriedades** que justificam os pesos continuam valendo. Um dia alguém vai achar que 35 é pouco
+e subir para 40 "para pegar mais fraude"; é o teste `nenhum fator sozinho quarentena` que vai
+explicar por que aquilo transforma o sistema num gerador de falso positivo.
 
 ---
 
@@ -175,7 +272,14 @@ Resumo do que foi medido:
 | C2 contenção máxima, 120 VUs | 0 erros de servidor, invariantes intactas |
 | C3 com e sem fila | erro no checkout −75%, pior caso −68% |
 | R1 a R8 resiliência | 6/6 passaram |
+| A1 cenários do antifraude | 6/6, incluindo os 2 falsos positivos que devem passar |
+| A2 portão antifraude | 15/15, em 3 fases, com o `risk-api` parado na fase 2 |
+| Unitários | 59/59 |
+| Ponta a ponta | 30/30 |
 | Invariantes | 6/6 vazias |
+
+Uma execução completa a partir do zero é `make clean && make up && make test`, e cobre
+as sete linhas acima em sequência.
 
 ## Evidências a coletar
 

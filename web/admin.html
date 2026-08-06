@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Risk-Shield — Painel Antifraude</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>&#x1F6E1;</text></svg>" />
+<style>
+  :root {
+    --bg: #0f1420; --surface: #161c2a; --surface2: #1d2434;
+    --text: #e3e7ef; --muted: #939cb1; --rule: #2b3345;
+    --gold: #e9a93c; --teal: #4fb79a; --rose: #e0798d;
+    --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:var(--sans); font-size:15px; line-height:1.5; }
+  .wrap { max-width:1200px; margin:0 auto; padding:1.5rem 1.25rem 4rem; }
+  header { border-top:3px solid var(--rose); padding-top:1.25rem; margin-bottom:1.5rem; }
+  h1 { font-family:var(--mono); font-size:1.75rem; letter-spacing:-.03em; margin:0 0 .25rem; }
+  .sub { color:var(--muted); font-size:.875rem; margin:0; }
+  h2 { font-family:var(--mono); font-size:.9rem; letter-spacing:.08em; margin:0 0 .75rem; text-transform:uppercase; color:var(--gold); }
+  .grid { display:grid; gap:1rem; grid-template-columns:repeat(auto-fit,minmax(16rem,1fr)); }
+  .card { background:var(--surface); border:1px solid var(--rule); border-radius:8px; padding:1rem 1.1rem; }
+  section { margin-bottom:1.5rem; }
+  .stat { display:flex; gap:1.75rem; flex-wrap:wrap; font-family:var(--mono); font-size:.8125rem; }
+  .stat b { display:block; font-size:1.5rem; font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+  .ok{color:var(--teal)} .warn{color:var(--gold)} .bad{color:var(--rose)}
+  table { border-collapse:collapse; width:100%; font-size:.8125rem; }
+  th,td { text-align:left; padding:.45rem .6rem; border-bottom:1px solid var(--rule); vertical-align:top; }
+  th { font-family:var(--mono); font-size:.6875rem; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:500; }
+  td.mono { font-family:var(--mono); }
+  tbody tr:hover { background:var(--surface2); cursor:pointer; }
+  .tbl-scroll { overflow-x:auto; max-height:340px; overflow-y:auto; }
+  button { background:var(--gold); color:#1a1200; border:0; border-radius:5px; padding:.4rem .8rem; font-weight:600; font-size:.8125rem; cursor:pointer; font-family:var(--sans); }
+  button.ghost { background:transparent; color:var(--text); border:1px solid var(--rule); }
+  button.danger { background:var(--rose); color:#2b0d14; }
+  button:hover { filter:brightness(1.08); }
+  input[type=number], input[type=text], select { background:var(--surface2); border:1px solid var(--rule); color:var(--text); border-radius:5px; padding:.35rem .5rem; font-family:var(--mono); font-size:.8125rem; width:5.5rem; }
+  label { font-size:.75rem; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+  .rule-row { display:flex; align-items:center; gap:.6rem; padding:.5rem 0; border-bottom:1px solid var(--rule); }
+  .rule-row:last-child { border-bottom:0; }
+  .rule-name { font-family:var(--mono); font-size:.8125rem; flex:1; }
+  .pill { display:inline-block; font-family:var(--mono); font-size:.6875rem; padding:.1rem .45rem; border-radius:3px; background:var(--surface2); color:var(--muted); }
+  .pill.ok{background:#10261f;color:var(--teal)} .pill.bad{background:#2b161b;color:var(--rose)} .pill.warn{background:#2a2313;color:var(--gold)}
+  .bar { height:6px; border-radius:3px; background:var(--surface2); overflow:hidden; margin-top:.2rem; }
+  .bar i { display:block; height:100%; background:var(--rose); }
+  pre { background:var(--bg); border:1px solid var(--rule); border-radius:6px; padding:.6rem; font-size:.7rem; overflow-x:auto; max-height:200px; margin:.4rem 0 0; color:var(--muted); }
+  .row { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
+  .empty { color:var(--muted); font-size:.8125rem; padding:.75rem 0; }
+  .evidence { border-left:2px solid var(--gold); padding:.4rem 0 .4rem .7rem; margin-bottom:.6rem; }
+  .evidence .why { font-size:.8125rem; }
+  .evidence .meta { font-family:var(--mono); font-size:.7rem; color:var(--muted); margin-top:.15rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Risk-Shield</h1>
+    <p class="sub">Antifraude para bilheteria &middot; POC 2 &middot; detecção de cambismo, bots e conluio</p>
+  </header>
+
+  <section class="card">
+    <h2>Visão geral</h2>
+    <div class="stat">
+      <span>compradores<b id="stCompradores">—</b></span>
+      <span>em quarentena<b id="stQuarentena" class="bad">—</b></span>
+      <span>eventos<b id="stEventos">—</b></span>
+      <span>evidências<b id="stEvidencias">—</b></span>
+      <span>score médio<b id="stScore" class="warn">—</b></span>
+      <span>dead letters<b id="stDlq">—</b></span>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Regras e pesos</h2>
+      <p class="sub" style="margin-bottom:.5rem">Alterações valem na hora — o worker lê as flags a cada mensagem.</p>
+      <div id="regras"></div>
+      <div class="row" style="margin-top:.75rem">
+        <label for="threshold">Threshold</label>
+        <input type="number" id="threshold" min="0" max="100" />
+        <button id="btnThreshold">Aplicar</button>
+        <button id="btnRecalc" class="ghost">Recalcular scores</button>
+      </div>
+      <p class="sub" style="margin-top:.5rem">
+        Recalcular re-deriva o score de todos a partir das evidências, sem reprocessar evento nenhum.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Modo de verificação na Bilheteria</h2>
+      <p class="sub" style="margin-bottom:.6rem">
+        O que acontece com a venda quando o antifraude está fora do ar. É decisão de produto, não de código.
+      </p>
+      <div class="row">
+        <select id="riskMode" style="width:auto">
+          <option value="fail_open">fail_open — deixa vender</option>
+          <option value="fail_closed">fail_closed — bloqueia</option>
+          <option value="disabled">disabled — não consulta</option>
+        </select>
+        <button id="btnMode">Aplicar</button>
+        <span id="modeState" class="pill">—</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Compradores por score</h2>
+    <div class="row" style="margin-bottom:.6rem">
+      <button id="fTodos" class="ghost">Todos</button>
+      <button id="fQuarentena" class="ghost">Só em quarentena</button>
+      <span class="sub">clique numa linha para ver as evidências</span>
+    </div>
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr><th>comprador</th><th>score</th><th>situação</th><th>principal fator</th><th>eventos</th><th></th></tr></thead>
+        <tbody id="compradores"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>Por que este comprador foi marcado</h2>
+      <div id="evidencias"><p class="empty">Selecione um comprador na tabela acima.</p></div>
+    </div>
+    <div class="card">
+      <h2>Dead letter queue</h2>
+      <p class="sub" style="margin-bottom:.5rem">Mensagens que falharam após todas as tentativas.</p>
+      <div id="dlq"><p class="empty">Vazia.</p></div>
+    </div>
+  </section>
+</div>
+<script src="/admin.js"></script>
+</body>
+</html>

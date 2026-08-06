@@ -129,3 +129,48 @@ describe('circuit breaker', () => {
     expect(breakerSnapshot().saudavel).toBe('closed');
   });
 });
+
+describe('cabecalhos da requisicao', () => {
+  it('REGRESSAO: um POST sem corpo nao anuncia content-type json', async () => {
+    // Anunciar `application/json` sem enviar corpo faz o Fastify do outro lado
+    // responder 400 ("Body cannot be empty when content-type is set to
+    // application/json"). Isso quebrava TODA chamada POST sem corpo — entre
+    // elas o estorno da compensacao da SAGA, que ficava retentando um 400 que
+    // jamais poderia dar certo.
+    //
+    // O caminho de estorno so foi exercitado pela primeira vez quando o teste
+    // do portao antifraude quarentenou um comprador depois da cobranca.
+    fetchMock.mockResolvedValue(resposta(200, {}));
+    await request('http://x/charges/abc/refund', { method: 'POST', target: 'payments', retries: 0 });
+
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers['content-type']).toBeUndefined();
+  });
+
+  it('um POST com corpo continua anunciando json', async () => {
+    fetchMock.mockResolvedValue(resposta(200, {}));
+    await request('http://x/charges', {
+      method: 'POST',
+      target: 'payments',
+      retries: 0,
+      body: { valor: 1 },
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init.headers as Record<string, string>)['content-type']).toBe('application/json');
+    expect(init.body).toBe(JSON.stringify({ valor: 1 }));
+  });
+
+  it('um cabecalho explicito do chamador ainda vence', async () => {
+    fetchMock.mockResolvedValue(resposta(200, {}));
+    await request('http://x/y', {
+      method: 'POST',
+      target: 'payments',
+      retries: 0,
+      headers: { 'content-type': 'text/plain' },
+    });
+
+    const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+    expect(headers['content-type']).toBe('text/plain');
+  });
+});

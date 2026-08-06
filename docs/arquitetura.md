@@ -118,6 +118,30 @@ flowchart TB
 | `payments` | Cobrança no PSP falso atrás de um ACL e ledger de dupla entrada imutável | Postgres próprio | **Forte (ACID)** | **Fronteira de consistência.** Dono do dinheiro, com o requisito de auditoria mais forte do sistema |
 | `realtime` | Fan-out por WebSocket do estado do mapa e da posição na fila | Conexões em memória | Eventual | **Perfil de escala.** Conexões longas, consumo de memória linear no número de espectadores |
 
+### Os três serviços do Risk-Shield (POC 2)
+
+O antifraude é um **sistema separado**, não um módulo da Bilheteria. Cada um sobe sem o
+outro; o que os liga são dois contratos estreitos — um tópico no barramento (assíncrono,
+a Bilheteria não espera) e um `GET /risk/status/:buyerId` (síncrono, atrás de circuit
+breaker e com política de falha configurável).
+
+A divisão interna segue a mesma regra de extração dos seis serviços da Bilheteria:
+
+| Serviço | Responsabilidade | Estado | O que justifica o processo próprio |
+|---|---|---|---|
+| `risk-event-api` | Recebe eventos de comportamento, aplica a camada de anticorrupção, publica no tópico e responde 202 | **Nenhum** | **Perfil de escala.** Rajadas de eventos são muito mais volumosas que consultas. Deliberadamente burro: valida, normaliza, publica |
+| `risk-worker` | Aplica as quatro regras, grava evidência, atualiza a projeção e aplica quarentena | Postgres `riskshield` | **Fronteira de consistência.** Único escritor de evidência e score, em transação única com lock por comprador. Um segundo escritor exigiria coordenação |
+| `risk-api` | Consulta de risco pela Bilheteria e painel administrativo | Lê a projeção | **Perfil de escala oposto.** É leitura, e está no caminho crítico da venda: não pode ficar atrás da fila de processamento |
+
+O ganho não é teórico. Se o `risk-worker` cair, a `risk-event-api` continua aceitando
+(o tópico segura) e a `risk-api` continua respondendo com o último score conhecido. O
+sistema degrada em **frescor da detecção**, e não em disponibilidade — que é o ponto de
+separar por barramento.
+
+`risk-event-api` **não** chama o motor de forma síncrona, e essa é a decisão central do
+desenho: uma lentidão do worker afetaria também o recebimento, e o recebimento não pode
+parar porque o evento já aconteceu. Perder um evento é pior do que processá-lo tarde.
+
 ### Módulos internos relevantes
 
 Estes carregam padrões avaliados, mas não justificam processo próprio:
@@ -129,20 +153,26 @@ Estes carregam padrões avaliados, mas não justificam processo próprio:
 | Emissão e validação de ingresso | `orders` | O ingresso é o resultado do pedido; mesmo ciclo de vida, mesma transação de confirmação |
 | Notificação | `orders` | Consumidor idempotente; não demonstra padrão que outro consumidor já não demonstre |
 
-### Catorze contêineres, e nada mais
+### Dezoito contêineres, e nada mais
 
 | Contêiner | Papel |
 |---|---|
-| `edge`, `catalog`, `inventory`, `orders`, `payments`, `realtime` | Os seis serviços |
-| `postgres` | Uma instância, três bancos lógicos isolados por credencial |
+| `edge-blue`, `edge-green`, `catalog`, `inventory`, `orders`, `payments`, `realtime` | Os seis serviços da Bilheteria (o `edge` em duas instâncias nomeadas, para canary e blue-green) |
+| `risk-event-api`, `risk-worker`, `risk-api` | Os três serviços do Risk-Shield |
+| `postgres` | Uma instância, quatro bancos lógicos isolados por credencial |
 | `redis` | Cache do catálogo e estado da fila virtual |
-| `redpanda` | Barramento de eventos |
+| `redpanda` | Barramento de eventos, com tópicos separados por sistema |
 | `traefik` | Balanceamento, canary e blue-green |
 | `psp-sandbox` | PIX falso, com injeção de latência e erro sob demanda |
 | `prometheus`, `grafana`, `jaeger` | Métricas e trace distribuído |
 
-O plano anterior chegava a cerca de vinte contêineres. A demonstração ao vivo agora cabe com folga
-na máquina de qualquer integrante — o que protege os 20% da nota que dependem dela funcionar.
+O plano anterior chegava a cerca de vinte contêineres só para a Bilheteria. A demonstração ao vivo
+cabe com folga na máquina de qualquer integrante — o que protege os 20% da nota que dependem dela
+funcionar.
+
+O Risk-Shield tem **tópico próprio** (`risk.events`), e não reaproveita `bilheteria.events`. São
+dois sistemas: a Bilheteria publica fatos do domínio dela, o Risk-Shield consome eventos
+normalizados pela sua camada de anticorrupção. Compartilhar tópico acoplaria os dois contratos.
 
 ### Uma nota sobre os bancos
 

@@ -1,10 +1,15 @@
-# Bilheteria — sistema completo em Docker Compose.
+# Bilheteria + Risk-Shield — sistema completo em Docker Compose.
 #
 # O checklist da Secao 7 pede "Docker Compose ou equivalente para execucao
 # local". Nao ha Kubernetes, nuvem nem servico externo: `make up` sobe tudo.
 #
-# Catorze conteineres: 6 servicos + PSP falso + Postgres + Redis + Redpanda +
-# Traefik + Prometheus + Grafana + Jaeger.
+# Dezoito conteineres: 6 servicos da Bilheteria + 3 do Risk-Shield + PSP falso
+# + Postgres + Redis + Redpanda + Traefik + Prometheus + Grafana + Jaeger.
+#
+# Os dois sistemas sao independentes de proposito — cada um poderia subir sem o
+# outro. O que os liga sao dois contratos estreitos: um topico no barramento
+# (assincrono, a Bilheteria nao espera) e um GET de status (sincrono, com
+# circuit breaker e politica de falha configuravel).
 
 name: bilheteria
 
@@ -32,6 +37,9 @@ x-service-base: &service-base
     PAYMENTS_URL: http://payments:3004
     REALTIME_URL: http://realtime:3005
     PSP_URL: http://psp-sandbox:3010
+    RISK_EVENT_API_URL: http://risk-event-api:3020
+    RISK_WORKER_URL: http://risk-worker:3021
+    RISK_API_URL: http://risk-api:3022
     HOLD_TTL_SECONDS: ${HOLD_TTL_SECONDS:-600}
     TICKET_PRICE_CENTS: ${TICKET_PRICE_CENTS:-25000}
   depends_on:
@@ -297,6 +305,71 @@ services:
     depends_on: []
     ports:
       - '${PSP_PORT:-3010}:3010'
+
+  # ---------------------------------------------------------------------------
+  # Risk-Shield — antifraude (POC 2)
+  #
+  # Tres servicos, e a divisao segue a mesma regra de extracao do ADR-0001:
+  # so vira servico o que tem fronteira de consistencia ou perfil de escala
+  # proprio.
+  #
+  #   risk-event-api  perfil de escala: recebe rajadas de eventos de
+  #                   comportamento, muito mais volumosas que consultas. So
+  #                   valida, normaliza e publica — sem tocar em banco.
+  #
+  #   risk-worker     fronteira de consistencia: e o unico que escreve
+  #                   evidencia e score, dentro de uma transacao, com lock por
+  #                   comprador. Um segundo escritor exigiria coordenacao.
+  #
+  #   risk-api        perfil de escala oposto: leitura, e o caminho critico da
+  #                   venda. Nao pode ficar atras da fila de processamento.
+  #
+  # Se o worker cair, a Event API continua aceitando (o topico segura) e a
+  # risk-api continua respondendo com o ultimo score conhecido. Degrada, nao
+  # cai — que e o ponto do desacoplamento por barramento.
+  # ---------------------------------------------------------------------------
+
+  risk-event-api:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: risk-event-api
+      PORT: 3020
+      # Sem banco: este servico e sem estado de proposito. Ele publica no
+      # topico e responde 202. O que garante a durabilidade e o Redpanda.
+      POSTGRES_DB: postgres
+    command: ['node', 'dist/services/risk-event-api/index.js']
+    ports:
+      - '${RISK_EVENT_API_PORT:-3020}:3020'
+
+  risk-worker:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: risk-worker
+      PORT: 3021
+      POSTGRES_DB: riskshield
+      POSTGRES_USER: risk_svc
+      POSTGRES_PASSWORD: risk_svc
+      # Pool pequeno: o worker consome em serie por particao. Um pool grande
+      # so mascararia lentidao de regra em espera por conexao.
+      POSTGRES_POOL_MAX: ${RISK_WORKER_POOL_MAX:-8}
+    command: ['node', 'dist/services/risk-worker/index.js']
+    ports:
+      - '${RISK_WORKER_PORT:-3021}:3021'
+
+  risk-api:
+    <<: *service-base
+    environment:
+      <<: *service-env
+      SERVICE_NAME: risk-api
+      PORT: 3022
+      POSTGRES_DB: riskshield
+      POSTGRES_USER: risk_svc
+      POSTGRES_PASSWORD: risk_svc
+    command: ['node', 'dist/services/risk-api/index.js']
+    ports:
+      - '${RISK_API_PORT:-3022}:3022'
 
   # ---------------------------------------------------------------------------
   # Ferramentas de operacao

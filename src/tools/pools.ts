@@ -29,6 +29,9 @@ export const urls = {
   payments: process.env.PAYMENTS_URL ?? 'http://localhost:3004',
   realtime: process.env.REALTIME_URL ?? 'http://localhost:3005',
   psp: process.env.PSP_URL ?? 'http://localhost:3010',
+  riskEventApi: process.env.RISK_EVENT_API_URL ?? 'http://localhost:3020',
+  riskWorker: process.env.RISK_WORKER_URL ?? 'http://localhost:3021',
+  riskApi: process.env.RISK_API_URL ?? 'http://localhost:3022',
 };
 
 export async function waitFor(url: string, label: string, attempts = 90): Promise<void> {

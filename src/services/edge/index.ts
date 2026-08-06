@@ -5,6 +5,7 @@ import { RemoteError, breakerSnapshot, request } from '../../shared/httpClient.j
 import { issueToken } from '../../shared/jwt.js';
 import { log } from '../../shared/log.js';
 import { getFlag, redis, setFlag, waitForRedis } from '../../shared/redis.js';
+import { checkBuyer, emitRiskEvent } from '../../shared/riskClient.js';
 import { bootstrap, createServer } from '../../shared/server.js';
 import {
   authenticate,
@@ -33,6 +34,26 @@ import { join as joinQueue, queueEnabled, reset as resetQueue, startAdmissionLoo
  */
 
 const WEB_ROOT = join(process.cwd(), 'web');
+
+/**
+ * Identificadores que alimentam o antifraude.
+ *
+ * O fingerprint vem do cliente e e, por natureza, falsificavel — um bot pode
+ * mandar um valor novo a cada requisicao. Isso nao invalida o sinal: forjar um
+ * fingerprint diferente por requisicao dispara a OUTRA metade da regra F1
+ * ("esta conta apareceu em N dispositivos"). As duas anomalias opostas estao
+ * cobertas justamente porque o dado nao e confiavel.
+ */
+function fingerprintOf(req: import('fastify').FastifyRequest): string | undefined {
+  const header = req.headers['x-device-fingerprint'];
+  return typeof header === 'string' && header.length > 0 ? header : undefined;
+}
+
+/** Hash do instrumento de pagamento. O valor cru nunca entra no antifraude. */
+function paymentHashOf(req: import('fastify').FastifyRequest): string | undefined {
+  const header = req.headers['x-payment-hash'];
+  return typeof header === 'string' && header.length > 0 ? header : undefined;
+}
 const staticCache = new Map<string, { body: Buffer; type: string }>();
 
 async function serveStatic(path: string): Promise<{ body: Buffer; type: string } | undefined> {
@@ -156,6 +177,19 @@ bootstrap(async () => {
       app.post('/api/queue/join', async (req, reply) => {
         const body = (req.body ?? {}) as { eventId?: string };
         if (!body.eventId) return reply.code(400).send({ error: 'eventId e obrigatorio' });
+
+        // O antifraude precisa saber que esta pessoa entrou na fila para poder
+        // medir, depois, quanto tempo ela levou ate comprar.
+        const quemEntrou = authenticate(req, 'orders');
+        if (quemEntrou.ok) {
+          emitRiskEvent({
+            eventType: 'QUEUE_JOIN',
+            buyerId: quemEntrou.claims.sub,
+            showId: body.eventId,
+            deviceFingerprint: fingerprintOf(req),
+            ipAddress: clientIp(req),
+          });
+        }
         if (!(await queueEnabled())) {
           return { queueToken: null, admitted: true, position: 0, ahead: 0, estimatedWaitSeconds: 0, disabled: true };
         }
@@ -207,6 +241,20 @@ bootstrap(async () => {
         const { section } = req.query as { section?: string };
         if (await shouldShed('low')) {
           return reply.code(503).header('retry-after', '2').send({ error: 'carga descartada' });
+        }
+
+        // A LEITURA do mapa e o evento mais valioso do conjunto — porque a
+        // AUSENCIA dele antes de uma compra e o sinal mais limpo de automacao
+        // que este dominio oferece. Um bot nao precisa olhar: ele ja sabe.
+        const leitor = authenticate(req, 'orders');
+        if (leitor.ok) {
+          emitRiskEvent({
+            eventType: 'SEATMAP_VIEW',
+            buyerId: leitor.claims.sub,
+            showId: eventId,
+            deviceFingerprint: fingerprintOf(req),
+            ipAddress: clientIp(req),
+          });
         }
         const qs = section ? `?section=${encodeURIComponent(section)}` : '';
         try {
@@ -265,6 +313,33 @@ bootstrap(async () => {
           return reply.code(400).send({ error: 'header Idempotency-Key e obrigatorio' });
         }
 
+        // ------------------------------------------------------------------
+        // Verificacao antifraude, no caminho critico.
+        //
+        // Sincrona porque a resposta muda o que acontece a seguir. O que fazer
+        // quando o antifraude esta fora do ar e decisao de produto, e vive na
+        // flag `risk_check_mode` — ver src/shared/riskClient.ts.
+        // ------------------------------------------------------------------
+        const risco = await checkBuyer(auth.claims.sub);
+        if (!risco.allow) {
+          return reply.code(403).send({
+            error: 'compra bloqueada pela avaliacao de risco',
+            reason: risco.reason,
+            detail: risco.detail,
+            score: risco.risk?.score,
+          });
+        }
+
+        emitRiskEvent({
+          eventType: 'CHECKOUT_ATTEMPT',
+          buyerId: auth.claims.sub,
+          showId: body.eventId,
+          seatId: body.seatId,
+          deviceFingerprint: fingerprintOf(req),
+          ipAddress: clientIp(req),
+          paymentHash: paymentHashOf(req),
+        });
+
         try {
           const result = await request<Record<string, unknown>>(`${config.ordersUrl}/orders`, {
             method: 'POST',
@@ -274,6 +349,18 @@ bootstrap(async () => {
             headers: { 'idempotency-key': idempotencyKey },
             body: { userId: auth.claims.sub, eventId: body.eventId, seatId: body.seatId },
           });
+
+          if ((result as { status?: string }).status === 'CONFIRMED') {
+            emitRiskEvent({
+              eventType: 'PURCHASE_CONFIRMED',
+              buyerId: auth.claims.sub,
+              showId: body.eventId,
+              seatId: body.seatId,
+              deviceFingerprint: fingerprintOf(req),
+              ipAddress: clientIp(req),
+              paymentHash: paymentHashOf(req),
+            });
+          }
           return reply.code(201).send(result);
         } catch (err) {
           return mapRemoteError(err, reply);
@@ -349,7 +436,29 @@ bootstrap(async () => {
       // Operacao — feature flags e diagnostico
       // ---------------------------------------------------------------------
 
+      /**
+       * CORS apenas nas rotas de administracao.
+       *
+       * O painel do Risk-Shield e servido pelo `risk-api`, noutra porta, e
+       * precisa ler e alterar a flag `risk_check_mode` — que e uma flag da
+       * BILHETERIA, porque quem decide o que fazer quando o antifraude cai e
+       * quem vende. Sem estes cabecalhos o navegador bloqueia a chamada e o
+       * card "Modo de verificacao" fica morto na tela.
+       *
+       * Restrito a `/api/admin/*` de proposito: as rotas de compra continuam
+       * sem CORS, e nenhuma pagina de terceiros consegue disparar um checkout
+       * em nome de quem estiver com sessao aberta.
+       */
+      app.addHook('onRequest', async (req, reply) => {
+        if (!req.url.startsWith('/api/admin/')) return;
+        reply.header('access-control-allow-origin', '*');
+        reply.header('access-control-allow-headers', 'content-type');
+        reply.header('access-control-allow-methods', 'GET, POST, OPTIONS');
+        if (req.method === 'OPTIONS') return reply.code(204).send();
+      });
+
       app.get('/api/admin/flags', async () => ({
+        risk_check_mode: await getFlag('risk_check_mode', 'fail_open'),
         queue_enabled: await getFlag('queue_enabled', 'true'),
         admission_rate: await getFlag('admission_rate', '50'),
         rate_limit_max: await getFlag('rate_limit_max', String(config.rateLimitMax)),
@@ -367,6 +476,7 @@ bootstrap(async () => {
       app.post('/api/admin/flags', async (req, reply) => {
         const body = (req.body ?? {}) as Record<string, string | number | boolean>;
         const allowed = [
+          'risk_check_mode',
           'queue_enabled',
           'admission_rate',
           'rate_limit_max',

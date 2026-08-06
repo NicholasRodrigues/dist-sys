@@ -10,6 +10,9 @@ async function main(): Promise<void> {
     ['payments', `${urls.payments}/health`],
     ['realtime', `${urls.realtime}/health`],
     ['psp-sandbox', `${urls.psp}/health`],
+    ['risk-event-api', `${urls.riskEventApi}/health`],
+    ['risk-worker', `${urls.riskWorker}/health`],
+    ['risk-api', `${urls.riskApi}/health`],
   ];
 
   for (const [label, url] of targets) {

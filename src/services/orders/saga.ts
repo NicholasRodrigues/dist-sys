@@ -5,6 +5,7 @@ import { RemoteError, request } from '../../shared/httpClient.js';
 import { log } from '../../shared/log.js';
 import { sagaSteps } from '../../shared/metrics.js';
 import { enqueue } from '../../shared/outbox.js';
+import { checkBuyer } from '../../shared/riskClient.js';
 import { issueTicket } from './ticket.js';
 
 /**
@@ -59,6 +60,16 @@ export interface OrderRow {
 const TERMINAL: OrderStatus[] = ['CONFIRMED', 'FAILED'];
 /** Quanto tempo um trabalhador segura a SAGA antes de outro poder assumir. */
 const LEASE_SECONDS = 15;
+
+/**
+ * Teto de tentativas da compensacao.
+ *
+ * Generoso de proposito: uma indisponibilidade passageira do `payments` deve
+ * ser absorvida, e nao virar um pedido abandonado. Mas o teto existe, porque
+ * uma SAGA que nunca alcanca estado terminal e um vazamento — ela volta ao
+ * varredor a cada ciclo, para sempre.
+ */
+const MAX_COMPENSATION_ATTEMPTS = 12;
 
 export function isTerminal(status: OrderStatus): boolean {
   return TERMINAL.includes(status);
@@ -185,10 +196,43 @@ async function stepReserve(order: OrderRow): Promise<OrderRow | undefined> {
 }
 
 // ---------------------------------------------------------------------------
+// Passo de risco — antes de tocar no dinheiro
+//
+// A quarentena pode chegar DEPOIS de a compra ter comecado: o comprador
+// reservou o assento e, entre a reserva e a cobranca, o motor antifraude
+// acumulou evidencia suficiente para marca-lo. Isso e comum num ataque de
+// cambista, em que as contas so ficam correlacionadas depois de varias
+// compras.
+//
+// Quando isso acontece, nao basta recusar: e preciso COMPENSAR o que ja foi
+// feito. E por isso que o antifraude cria uma transicao a mais na SAGA, e nao
+// so uma validacao na borda.
+// ---------------------------------------------------------------------------
+
+async function assertNotQuarantined(order: OrderRow, step: string): Promise<string | undefined> {
+  try {
+    const decision = await checkBuyer(order.user_id);
+    if (decision.allow) return undefined;
+    await logStep(order.saga_id, step, 'quarantined', decision.detail);
+    return decision.detail;
+  } catch (err) {
+    // Uma falha na consulta nao pode travar a SAGA. O modo de falha ja foi
+    // decidido dentro de `checkBuyer`; aqui um erro inesperado deixa passar.
+    await logStep(order.saga_id, step, 'risk-check-error', String(err));
+    return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Passo 2 — cobrar
 // ---------------------------------------------------------------------------
 
 async function stepCharge(order: OrderRow): Promise<OrderRow | undefined> {
+  // Antes de cobrar. Compensar aqui custa apenas liberar o assento — depois da
+  // cobranca, custaria um estorno.
+  const bloqueio = await assertNotQuarantined(order, 'risk');
+  if (bloqueio) return compensate(order.id, `antifraude: ${bloqueio}`);
+
   try {
     await request(`${config.paymentsUrl}/charges`, {
       method: 'POST',
@@ -236,6 +280,12 @@ async function stepConfirm(order: OrderRow): Promise<OrderRow | undefined> {
   // assento voltaria a ser vendido — com um ingresso valido ja emitido. Nesta
   // ordem, o pior caso e um ingresso ainda nao emitido para um assento ja
   // vendido, que a proxima tentativa resolve.
+  // Segunda verificacao, agora com o pagamento ja capturado. Se a quarentena
+  // chegou nesta janela, a compensacao inclui estorno — e o cenario que prova
+  // que o passo de risco e parte da SAGA, e nao um porteiro na entrada.
+  const bloqueio = await assertNotQuarantined(order, 'risk.post-payment');
+  if (bloqueio) return compensate(order.id, `antifraude apos pagamento: ${bloqueio}`);
+
   try {
     await request(`${config.inventoryUrl}/holds/${order.saga_id}/confirm`, {
       method: 'POST',
@@ -322,6 +372,30 @@ async function stepCompensate(order: OrderRow): Promise<OrderRow | undefined> {
       await logStep(order.saga_id, 'compensate.refund', 'ok');
     }
   } catch (err) {
+    // Um 4xx no estorno nao melhora com o tempo: e erro de contrato, nao de
+    // disponibilidade. Retentar para sempre so mantem a SAGA girando no
+    // varredor sem nunca terminar.
+    //
+    // Encontramos isso do jeito certo: o teste do portao antifraude levou a
+    // SAGA ao caminho de estorno pela primeira vez, e ela ficou 40 segundos
+    // repetindo `payments respondeu 400`. A causa era o cliente HTTP anunciar
+    // JSON num POST sem corpo; a causa esta corrigida, mas o laco infinito era
+    // um defeito por si so.
+    //
+    // O pedido para num estado terminal com o motivo explicito. NAO fingimos
+    // que o dinheiro voltou: se o estorno nao foi aceito, isso vira trabalho
+    // humano, e o log em nivel de erro existe para que alguem saiba.
+    const permanente = err instanceof RemoteError && err.status !== undefined && err.status < 500;
+    if (permanente || order.attempts >= MAX_COMPENSATION_ATTEMPTS) {
+      await logStep(order.saga_id, 'compensate.refund', 'desistiu', String(err));
+      log.error('estorno nao aceito: pedido precisa de intervencao manual', {
+        orderId: order.id,
+        sagaId: order.saga_id,
+        attempts: order.attempts,
+        error: String(err),
+      });
+      return fail(order.id, `estorno nao aceito, requer intervencao manual: ${String(err)}`);
+    }
     await logStep(order.saga_id, 'compensate.refund', 'retry', String(err));
     await reschedule(order.id, 3);
     return undefined;

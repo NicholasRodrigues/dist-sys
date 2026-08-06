@@ -1,4 +1,4 @@
-# Bilheteria — todos os comandos do projeto.
+# Bilheteria + Risk-Shield — todos os comandos do projeto.
 #
 # Regra do repositorio: qualquer tarefa e um comando so, e nenhuma exige nada
 # instalado na maquina alem de Docker. As ferramentas rodam dentro da rede do
@@ -8,8 +8,12 @@ SHELL := /bin/bash
 COMPOSE := docker compose
 RUN := $(COMPOSE) run --rm -T tools
 
+APP_SERVICES := edge-blue edge-green catalog inventory orders payments realtime psp-sandbox \
+                risk-event-api risk-worker risk-api
+
 .DEFAULT_GOAL := help
 .PHONY: help up down restart build ca seed test test-unit smoke invariants chaos \
+        scenarios risk-gate risk-config risk-reset \
         load load-with-queue load-without-queue compare contention deploy-status canary \
         blue-green rollback flags logs ps urls demo clean reset psp-reset
 
@@ -17,7 +21,7 @@ RUN := $(COMPOSE) run --rm -T tools
 
 help: ## Mostra este menu
 	@echo ""
-	@echo "  BILHETERIA — Projeto Final de Engenharia de Sistemas Distribuidos"
+	@echo "  BILHETERIA + RISK-SHIELD — Engenharia de Sistemas Distribuidos"
 	@echo "  ============================================================================"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[1m%-22s\033[0m %s\n", $$1, $$2}'
@@ -49,7 +53,7 @@ clean: ## Derruba tudo e apaga os volumes
 	@$(COMPOSE) down -v --remove-orphans
 
 restart: ## Reinicia os servicos de aplicacao
-	@$(COMPOSE) restart edge-blue edge-green catalog inventory orders payments realtime psp-sandbox
+	@$(COMPOSE) restart $(APP_SERVICES)
 
 build: ca ## Reconstroi a imagem
 	@$(COMPOSE) build edge-blue
@@ -59,7 +63,7 @@ reset: ## Recarrega os dados de demonstracao do zero
 
 ## ---------------------------------------------------------------------------
 
-test: test-unit smoke chaos ## Bateria completa: unitarios, ponta a ponta e resiliencia
+test: test-unit smoke chaos scenarios risk-gate invariants ## Bateria completa do projeto
 
 test-unit: ## Testes unitarios (nao precisam do sistema no ar)
 	@docker run --rm -v "$(PWD):/app" -w /app \
@@ -75,6 +79,41 @@ invariants: ## As consultas que nao podem retornar linha
 
 chaos: ## Cenarios de resiliencia com falha injetada (R1 a R8)
 	@$(RUN) node dist/tools/chaos.js
+
+## ---------------------------------------------------------------------------
+## Antifraude (POC 2)
+
+scenarios: ## Os 6 cenarios do antifraude, com 2 falsos positivos que devem passar
+	@$(RUN) node dist/tools/simulator.js
+
+# A pergunta central da integracao — "se o antifraude cai, a venda para?" — so
+# pode ser respondida com o antifraude realmente no chao. Por isso o alvo para o
+# conteiner no meio do teste, em vez de simular a falha.
+#
+# O `start` roda mesmo se a fase 2 falhar: deixar o sistema mutilado depois de
+# um teste vermelho seria pior do que o proprio teste vermelho.
+#
+# O comprador da rodada e sorteado aqui e repassado as tres fases: elas sao
+# processos distintos que precisam falar do mesmo sujeito, mas duas execucoes
+# nao podem compartilhar historico de risco.
+GATE := $(COMPOSE) run --rm -T -e GATE_BUYER=$$buyer tools node dist/tools/risk-gate.js
+
+risk-gate: ## Prova o portao antifraude no checkout, inclusive com o antifraude no chao
+	@buyer=gate-$$(head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n'); \
+	 $(GATE) normal || exit 1; \
+	 echo "==> parando o risk-api para medir fail_open e fail_closed"; \
+	 $(COMPOSE) stop risk-api >/dev/null 2>&1; \
+	 $(GATE) indisponivel; status=$$?; \
+	 echo "==> religando o risk-api"; \
+	 $(COMPOSE) start risk-api >/dev/null 2>&1; \
+	 [ $$status -eq 0 ] || exit $$status; \
+	 $(GATE) restaurado
+
+risk-config: ## Mostra pesos, limiar e estatisticas do antifraude
+	@$(RUN) node dist/tools/risk.js
+
+risk-reset: ## Apaga eventos, evidencias e scores do antifraude
+	@$(RUN) node dist/tools/risk.js reset
 
 ## ---------------------------------------------------------------------------
 
@@ -148,7 +187,7 @@ demo: ## Roteiro guiado da demonstracao, passo a passo
 	@$(RUN) node dist/tools/demo.js
 
 logs: ## Segue os logs dos servicos
-	@$(COMPOSE) logs -f --tail=80 edge-blue edge-green catalog inventory orders payments realtime psp-sandbox
+	@$(COMPOSE) logs -f --tail=80 $(APP_SERVICES)
 
 ps: ## Estado dos conteineres
 	@$(COMPOSE) ps
@@ -157,6 +196,7 @@ urls: ## Enderecos uteis
 	@echo ""
 	@echo "  Interface .......... http://localhost:$${EDGE_PORT:-8080}/"
 	@echo "  API ................ http://localhost:$${EDGE_PORT:-8080}/api/events"
+	@echo "  Painel antifraude .. http://localhost:$${RISK_API_PORT:-3022}/"
 	@echo "  Grafana ............ http://localhost:$${GRAFANA_PORT:-3030}/d/bilheteria"
 	@echo "  Jaeger (traces) .... http://localhost:$${JAEGER_PORT:-16686}"
 	@echo "  Prometheus ......... http://localhost:$${PROMETHEUS_PORT:-9090}"
