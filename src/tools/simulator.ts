@@ -425,23 +425,43 @@ async function status(buyerId: string): Promise<BuyerRisk> {
  */
 async function aguardarProcessamento(
   esperado: Map<string, number>,
-  timeoutMs = 60_000,
+  estagnacaoMs = 45_000,
 ): Promise<void> {
-  const limite = Date.now() + timeoutMs;
   let faltando: string[] = [];
+  let processados = -1;
+  let ultimoProgresso = Date.now();
 
-  while (Date.now() < limite) {
+  // O criterio de desistencia e ESTAGNACAO, e nao tempo total.
+  //
+  // Um prazo fixo confunde "o worker travou" com "o worker esta ocupado", e as
+  // duas coisas exigem reacoes opostas. Rodar os cenarios logo depois de uma
+  // bateria de carga deixa dezenas de milhares de eventos na fila; o worker
+  // consome tudo em ordem e chega nos nossos — so demora. Com prazo fixo, o
+  // primeiro cenario falhava e os cinco seguintes passavam, o que e o retrato
+  // de um teste medindo a fila em vez do antifraude.
+  for (;;) {
     const atual = await Promise.all(
       [...esperado.keys()].map(async (b) => ({ buyer: b, risk: await status(b) })),
     );
+
+    const vistos = atual.reduce((soma, { risk }) => soma + risk.eventsSeen, 0);
+    if (vistos > processados) {
+      processados = vistos;
+      ultimoProgresso = Date.now();
+    }
+
     faltando = atual
       .filter(({ buyer, risk }) => risk.eventsSeen < (esperado.get(buyer) ?? 0))
       .map(({ buyer, risk }) => `${buyer} (${risk.eventsSeen}/${esperado.get(buyer)})`);
     if (faltando.length === 0) return;
+
+    if (Date.now() - ultimoProgresso > estagnacaoMs) {
+      throw new Error(
+        `worker parou de progredir por ${estagnacaoMs / 1000}s: ${faltando.join(', ')}`,
+      );
+    }
     await new Promise((r) => setTimeout(r, 400));
   }
-
-  throw new Error(`worker nao processou tudo em ${timeoutMs / 1000}s: ${faltando.join(', ')}`);
 }
 
 function contarPorComprador(eventos: SimEvent[]): Map<string, number> {

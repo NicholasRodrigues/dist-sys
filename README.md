@@ -1,35 +1,59 @@
-# Bilheteria + Risk-Shield — Venda de Ingressos com Antifraude
+# Risk-Shield — Antifraude Mínimo Viável para Bilheteria
 
 > **Projeto Final — Engenharia de Sistemas Distribuídos 2026.1**
-> Tema próprio (Seção 3): venda de ingressos sob pico de demanda (*flash sale*).
-> **POC 2 (Seção 4.2): antifraude mínimo viável**, aplicado ao domínio da bilheteria.
+> **POC 2 (Seção 4.2): antifraude mínimo viável.**
+> Domínio hospedeiro: uma plataforma de venda de ingressos sob pico, construída
+> para que o antifraude tivesse onde funcionar de verdade.
 
-Dois sistemas independentes que se integram por dois contratos estreitos:
-**9 microsserviços em 18 contêineres**, executando inteiramente em Docker Compose.
+Um motor de *risk scoring* multifatorial que detecta cambistas, bots e conluio
+em tempo real, e coloca compradores suspeitos em quarentena — **integrado ao
+checkout de um sistema de vendas real**, e não a um simulador.
+
+**9 microsserviços em 18 contêineres**, inteiramente em Docker Compose.
 Um comando sobe tudo.
 
 ```bash
 make up         # sobe os dois sistemas e carrega 40.000 assentos de demonstração
-make test       # unitários + ponta a ponta + resiliência + antifraude
 make scenarios  # os 6 cenários de fraude, com 2 falsos positivos que devem passar
+make risk-gate  # o portão no checkout, com o antifraude derrubado no meio
 make demo       # roteiro guiado da apresentação
 ```
+
+Painel do antifraude: **http://localhost:3022/**
 
 ---
 
 ## O problema
 
-Vender ingresso é fácil. Vender 40.000 ingressos em 90 segundos, sem vender o
-mesmo assento duas vezes, sem derrubar o site e sem perder o dinheiro de ninguém
-é um problema de sistemas distribuídos inteiro condensado em um único caso de uso.
+Detectar fraude é fácil se você puder errar. O difícil é a segunda metade:
+
+> **Pegar o cambista sem bloquear a família que comprou seis lugares do mesmo
+> notebook.**
+
+Um antifraude que quarentena todo mundo acerta 100% dos fraudadores e é inútil —
+o custo do falso positivo aqui é negar a venda a um cliente legítimo, e esse
+custo é imediato e visível. Por isso **dois dos seis cenários de teste são
+compradores honestos com sinais suspeitos reais, e a asserção é que passem.**
+
+Isso obriga a resolver quatro problemas de sistemas distribuídos:
 
 | Pressão | Por que é difícil |
 |---|---|
-| Pico de 100× a 1000× sobre a média | Capacidade que precisa existir só nesse minuto |
-| Contenção extrema | Todo mundo quer o mesmo setor, os mesmos assentos |
-| Invariante inegociável | **Overselling = zero.** Não existe "eventualmente consistente" para assento |
-| Rede externa no meio | Um timeout do PIX **não** diz se a cobrança falhou |
-| Falha parcial é a norma | Um serviço lento não pode virar cascata |
+| O sinal é coletivo | Conluio é invisível para qualquer regra que olhe uma conta por vez |
+| A decisão está no caminho crítico | Uma consulta síncrona dentro do checkout, que não pode derrubá-lo |
+| O detector também falha | Se o antifraude cai, a venda para? Não há resposta técnica — é decisão de produto |
+| A compra dura segundos | A decisão pode mudar **no meio** da transação, depois de o dinheiro ter sido capturado |
+
+### E o domínio hospedeiro
+
+O antifraude precisa de vendas reais para observar. A bilheteria existe para
+isso — e é um problema distribuído por mérito próprio: 40.000 ingressos em 90
+segundos, **overselling = zero**, PIX externo cujo timeout não diz se a cobrança
+falhou, e falha parcial como norma.
+
+Essa escolha é o que torna a POC 2 demonstrável de verdade: é porque existe uma
+SAGA real que dá para mostrar uma quarentena chegando **depois do pagamento** e
+forçando estorno — o cenário mais caro e mais informativo do projeto.
 
 ---
 
@@ -132,60 +156,80 @@ Em cerca de um minuto:
 Tudo abaixo é reproduzível pelos comandos acima. Detalhe completo em
 [`docs/resultados/`](docs/resultados/README.md).
 
-**Correção**
-
-- 40 compradores no **mesmo** assento → exatamente **1** confirmado, 1 ingresso válido
-- 50 requisições concorrentes com a **mesma** chave → **1** pedido, **1** cobrança
-- 120 usuários disputando um setor → **0** erros de servidor, invariantes intactas
-- Ledger de dupla entrada: soma de todos os lançamentos = **0**, sempre
-
-**Resiliência** (6/6 cenários)
-
-- PSP fora do ar → circuit breaker abre, e **nenhum assento fica preso**
-- PSP cobra e engole a resposta → reconciliado, **1 cobrança**, sem estorno indevido
-- 50% de erro no PSP → **todos** os pedidos chegam a estado terminal
-
-**Fila virtual** (250 VUs, 45 s)
-
-| | Sem fila | Com fila |
-|---|---|---|
-| p99 do checkout | 5,01 s | **2,70 s** |
-| Erro no checkout | 1,46% | **0,36%** |
-| Pior caso | 8,62 s | **2,76 s** |
-
-A fila não aumenta a capacidade — ela **escolhe o ponto de operação**. Sem ela, a
-espera não desaparece: fica escondida dentro de um checkout lento, onde o usuário
-não entende o que está acontecendo.
-
-**Antifraude** (`make scenarios`, 6/6)
+### Antifraude — ele discrimina (`make scenarios`, 6/6)
 
 | Cenário | Score | Resultado |
 |---|---|---|
 | Comprador legítimo | 0,0 | livre |
-| Família: 4 contas, 1 notebook, 1 cartão | 22,5 | **livre** |
-| 1 conta em 15 dispositivos, ritmo humano | 43,6 | **livre** |
-| Bot solitário: 14 tentativas a cada 300 ms | 75,0 | quarentena |
-| Conluio: 12 contas, 12 IPs, mesmo setor em segundos | 91,9 | quarentena |
+| **Família: 4 contas, 1 notebook, 1 Wi-Fi, 1 cartão** | **22,5** | **livre** |
+| **1 conta em 15 dispositivos, ritmo humano** | **43,6** | **livre** |
+| Bot solitário: 14 tentativas a cada 300 ms, sem ler o mapa | 75,0 | quarentena |
+| Conluio: 12 contas, 12 devices, 12 IPs, mesmo setor em segundos | 91,9 | quarentena |
 | Fazenda: 20 contas, 1 dispositivo, 1 IP | 100,0 | quarentena |
 
-Os dois em negrito são o teste que importa: um antifraude que quarentena todo mundo
-acerta os cambistas e é inútil. O limiar de 70 cai entre 43,6 e 75,0.
+Os dois em negrito são o teste que importa. O limiar de 70 cai entre 43,6 e 75,0
+— folga de mais de 30 pontos para os dois lados.
 
 Os pesos codificam uma regra de decisão, não um chute: **nenhum fator sozinho
-quarentena; dois fatores quaisquer no máximo, sim** — verificado por teste unitário
+quarentena (maior peso 38); dois fatores quaisquer no máximo, sim (menor par
+35+35 = 70)** — verificado por teste unitário. A versão anterior somava 100 e era
+cega ao bot solitário *por construção*
 ([ADR-0013](docs/adr/0013-pesos-e-limiar-do-score.md)).
 
-**Integração dos dois sistemas** (`make risk-gate`, 15/15 em 3 fases)
+E cada decisão vem com o motivo em português: *"12 contas distintas compraram no
+setor MEZANINO em 30 segundos: aquisição coordenada"*. Ninguém libera um
+comprador olhando para um número.
 
-- Comprador em quarentena → **HTTP 403 com o motivo em texto**, sem consumir assento
-- Quarentena que chega **depois do pagamento** → a SAGA compensa com **estorno**
-- Com o `risk-api` realmente parado: `fail_open` vende, `fail_closed` bloqueia, e a
-  chave vira em tempo de execução sem reiniciar nada
+### Antifraude — ele muda a venda (`make risk-gate`, 15/15 em 3 fases)
+
+- Comprador em quarentena → **HTTP 403 com o motivo**, sem consumir assento nem criar pedido
+- Quarentena que chega **depois do pagamento** → a SAGA compensa com **estorno** + devolve o assento
+- Com o `risk-api` **realmente parado**: `fail_open` vende, `fail_closed` bloqueia,
+  e a chave vira em tempo de execução sem reiniciar nada ([ADR-0015](docs/adr/0015-fail-open-no-portao-antifraude.md))
 - Circuit breaker mantém o checkout em **268 ms** com a dependência morta
 
-O teste do portão encontrou **dois defeitos reais na Bilheteria**, invisíveis até então
-porque nenhum teste havia percorrido a compensação com estorno
-([ADR-0016](docs/adr/0016-risco-dentro-da-saga.md)).
+### Antifraude — quanto custou (`make compare-risk`)
+
+A verificação é síncrona no caminho mais crítico. Mesma carga, uma flag trocada:
+
+| | sem antifraude | com antifraude |
+|---|---|---|
+| compras confirmadas | 2.121 | 2.177 |
+| p95 do checkout | 3.411 ms | 3.076 ms |
+| erro no checkout | 0,84% | **2,54%** |
+
+**O custo em latência fica abaixo da variação entre repetições** — a consulta é
+um `SELECT` por chave primária numa projeção de leitura, atrás de um breaker. O
+custo real é a taxa de erro: +1,7 ponto de checkouts recusados, que são os
+compradores quarentenados. Esse é o preço de a verificação valer alguma coisa.
+
+---
+
+### O domínio hospedeiro, resumido
+
+**Correção**
+
+- 40 compradores no **mesmo** assento → exatamente **1** confirmado
+- 50 requisições concorrentes com a **mesma** chave → **1** pedido, **1** cobrança
+- Ledger de dupla entrada: soma de todos os lançamentos = **0**, sempre
+
+**Resiliência** (6/6) — PSP fora do ar → breaker abre e nenhum assento fica preso;
+PSP cobra e engole a resposta → reconciliado, 1 cobrança; 50% de erro → todos os
+pedidos chegam a estado terminal.
+
+**Fila virtual** — medida em **dois pontos de operação**, e é a comparação que
+mais ensina:
+
+| | 200 VUs | | 600 VUs | |
+|---|---|---|---|---|
+| | sem fila | com fila | sem fila | com fila |
+| compras confirmadas | 2.488 | 2.198 | 1.669 | **2.724** |
+| p99 do checkout | 5,02 s | 6,36 s | 10,96 s | **2,10 s** |
+
+A 200 VUs a fila **atrapalha**: o núcleo não está saturado, e o controle de
+admissão só acrescenta espera. A 600 VUs ela vende **63% mais** com p99 **5×
+menor**. A fila não aumenta a capacidade — ela **escolhe o ponto de operação**, e
+só compensa depois do joelho da curva. Custo declarado: 13,2 s de espera no p95.
 
 ---
 
@@ -246,11 +290,15 @@ infra/             Traefik, Prometheus, Grafana
 
 | Integrante | Trilha | Contato |
 |---|---|---|
-| _a preencher_ | Plataforma e Deployment | |
-| _a preencher_ | Borda e Admissão | |
-| _a preencher_ | Núcleo de Vendas | |
-| _a preencher_ | Transações e Ingresso | |
-| _a preencher_ | Dinheiro e Presença | |
+| Nicholas Rodrigues | Risk API, painel e integração com a Bilheteria | nicholasgabriel65@gmail.com |
+| Arthur Miranda Tavares | _a confirmar_ | _a preencher_ |
+| Pedro Henrique de Araújo Lima | _a confirmar_ | _a preencher_ |
+| Tiago Trindade de Oliveira | _a confirmar_ | _a preencher_ |
+
+> A Seção 2.1 da especificação prevê equipes de 5 integrantes; este grupo tem 4.
+> O checklist da Seção 7 também exige **histórico de commits mostrando
+> contribuição de todos os membros**, e a Seção 5 diz que cada integrante recebe
+> avaliação individual baseada nos commits — hoje o histórico tem um único autor.
 
 ---
 

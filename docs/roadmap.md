@@ -134,21 +134,43 @@ que rende em pontos.
 
 ---
 
-## Roteiro do videocast (12 a 15 minutos, rigoroso)
+## Roteiro do videocast
 
-Cinco integrantes, cinco blocos. Ensaiar com cronômetro: o tempo é critério de avaliação, e
-estourar custa nota.
+A entrega é a **POC 2 — antifraude**. O roteiro reflete isso: a bilheteria é
+apresentada como domínio hospedeiro em dois minutos, e o resto do tempo vai para
+o Risk-Shield. Ensaiar com cronômetro; o tempo é critério de avaliação.
 
-| Bloco | Minutos | Quem | Conteúdo |
+> **Pendência com o professor:** a Seção 1.2 diz 12–15 min e o checklist da
+> Seção 7 diz 15–30. Os dois roteiros abaixo cobrem os dois casos — o de 15 min
+> é o de 25 sem os blocos marcados como opcionais.
+
+| Bloco | Min | Quem | Conteúdo |
 |---|---|---|---|
-| 1. Contexto e problema | 2 | T2 | Por que vender ingresso no pico é um problema distribuído. A tensão entre a invariante do assento e a escala do pico |
-| 2. Arquitetura e decisões | 4 | T4 | C4 níveis 1 e 2; a fronteira de consistência; por que SAGA orquestrada; **por que seis serviços e não dez**, com as extrações rejeitadas; dois ou três trade-offs com o custo assumido em voz alta |
-| 3. Demonstração | 4 | T3 e T5 | Compra ao vivo; mapa atualizando por WebSocket; injeção de falha no `payments` mostrando a compensação no trace; retentativa provando idempotência no ledger |
-| 4. Resultados e métricas | 3 | T1 | O gráfico com e sem fila; percentis; overselling zero sob contenção; canary sendo revertido |
-| 5. Lições aprendidas | 2 | todos | O que quebrou de verdade, **o que foi deliberadamente deixado de fora e por quê**, o que se faria diferente |
+| 1. O problema real do antifraude | 2 | T2 | Não é pegar fraude — é pegar fraude **sem bloquear a família que comprou seis lugares do mesmo notebook**. O custo do falso positivo é imediato e visível |
+| 2. O domínio hospedeiro, rápido | 2 | T1 | A bilheteria em uma tela: 40.000 assentos, overselling zero, SAGA com PIX externo. **Por que ela existe:** o antifraude precisa de vendas reais para observar, e é a SAGA que torna o cenário de estorno possível |
+| 3. Arquitetura do Risk-Shield | 4 | T4 | C4 níveis 1 e 2; os três serviços e a regra de extração; por que a Event API **não** chama o motor de forma síncrona; CQRS entre worker e API; evidência append-only com score derivado |
+| 4. O modelo de score | 3 | T4 | Os quatro fatores da Seção 4.2. **Os pesos como regra de decisão:** nenhum fator sozinho quarentena, dois quaisquer sim. Por que a versão que somava 100 era cega ao bot solitário. Mostrar o teste unitário que trava a propriedade |
+| 5. Demonstração — ele discrimina | 4 | T3 | `make scenarios` ao vivo. Passar rápido pelos quatro ataques e **parar nos dois falsos positivos**: abrir o painel, mostrar a família com 22,5 e a explicação em texto — "4 contas usaram o mesmo instrumento de pagamento". O sistema notou, pontuou e não agiu |
+| 6. Demonstração — ele muda a venda | 4 | T3 e T5 | `make risk-gate`. Comprador quarentenado leva 403 com o motivo. **O momento alto:** quarentena que chega depois do pagamento, e a SAGA compensando com estorno — mostrar o `saga_log` e o trace de 43 spans no Jaeger |
+| 7. Quando o antifraude cai | 3 | T5 | Parar o `risk-api` ao vivo. `fail_open` vende, `fail_closed` bloqueia, chave virando em tempo de execução. **Não há resposta técnica — é decisão de produto**, e por isso mora numa flag. O breaker segurando o checkout em 268 ms |
+| 8. Resultados e métricas | 3 | T1 | Custo do antifraude no caminho crítico (abaixo do ruído; o custo real é +1,7 p.p. de erro). A fila virtual nos **dois pontos de operação**: a 200 VUs atrapalha, a 600 vende 63% mais com p99 5× menor |
+| 9. *(opcional)* Deployment | 2 | T1 | Canary a 10%, blue-green, rollback por peso no Traefik |
+| 10. Lições aprendidas | 3 | todos | Os bugs que os testes encontraram: o estorno que nunca funcionara, o laço infinito de compensação, o Traefik sobrescrevendo o IP. **E o melhor deles:** a própria bateria de fumaça foi quarentenada pelo antifraude, e o detector estava certo |
 
-O bloco 3 é o que decide a nota de demonstração funcional. Gravar com o sistema já aquecido e ter
-uma gravação reserva do fluxo, para o caso de a demo ao vivo falhar.
+**Versão de 15 minutos:** blocos 1, 2 (1 min), 3, 4, 5, 6 e 10 (1 min). Cortar 7,
+8 e 9 — e mencionar em uma frase que estão no repositório.
+
+Os blocos 5 e 6 decidem a nota de demonstração funcional. Gravar com o sistema já
+aquecido (`make up && make scenarios` antes) e ter uma gravação reserva, para o
+caso de a demo ao vivo falhar.
+
+### O que NÃO fazer na apresentação
+
+- Não abrir pelo domínio. A entrega é a POC 2; a bilheteria é cenário.
+- Não mostrar só os ataques sendo pegos. Qualquer regra paranoica pega ataque —
+  o que diferencia este trabalho são os dois falsos positivos passando.
+- Não dizer "score 87" sem ler a explicação em texto junto. O ponto do painel é
+  que ninguém decide nada com um número.
 
 ---
 
@@ -159,12 +181,6 @@ uma gravação reserva do fluxo, para o caso de a demo ao vivo falhar.
 | Projeto 01 — grupo e tema | 26/06/2026 | 10% |
 | Projeto 02 — documentação inicial | 10/07/2026 | 20% |
 | Projeto 03 — documentação final | 07/08/2026 | 70% |
-
-**Pendência a resolver com o professor:** o documento se contradiz sobre a duração do videocast —
-a Seção 1.2 diz 12 a 15 minutos, marcado como "mínimo/máximo rigoroso", e o checklist da Seção 7
-diz 15 a 30. Como duração é critério de avaliação, a dúvida precisa ser enviada com as 48 horas de
-antecedência que a Seção 8 exige. O roteiro abaixo assume 12 a 15, por ser o único marcado como
-rigoroso.
 
 A [`proposta.md`](proposta.md) atende ao formato de uma página exigido para tema próprio; os C4,
 os ADRs e a definição de stack atendem ao escopo do Projeto 02; o restante deste roadmap conduz

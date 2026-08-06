@@ -68,15 +68,31 @@ fronteira dos serviços, e por isso vive numa ferramenta de operação, e não d
 
 ### C1 — Flash sale
 
-Rampa de 0 a 1.000 usuários virtuais em 60 segundos, mantidos por 5 minutos, contra um evento de
-40.000 assentos.
+Rampa de 0 até `K6_VUS` em 20 s, mantidos por 60 s, contra um evento de 40.000 assentos. Cada
+usuário virtual percorre o caminho completo: autentica, entra na fila, **abre o mapa**, espera um
+tempo de leitura plausível e compra.
 
-| Métrica | Meta |
-|---|---|
-| p50 / p95 / p99 do checkout | p95 < 500 ms |
-| p95 do mapa de assentos | < 100 ms |
-| Taxa de erro 5xx | < 1% |
-| Overselling | zero |
+| Métrica | Meta | Medido |
+|---|---|---|
+| Taxa de erro 5xx | < 1% | **0,1%** ✔ |
+| Overselling | zero | **zero** ✔ |
+| p95 do mapa de assentos (`tipo:mapa`) | < 800 ms | **295 ms** ✔ |
+| p95 da consulta de assento livre (`tipo:leitura`) | < 300 ms | **~400 ms** ✘ |
+| p95 do checkout | < 5 s | **1,8 s a 600 VUs com fila** ✔ |
+
+**Sobre as metas.** A especificação da disciplina não define perfil de carga — ela exige
+"resultados de testes (carga, resiliência, integração)", e o perfil é escolha nossa. Uma versão
+anterior deste plano prometia 1.000 VUs por 5 minutos com p95 do checkout abaixo de 500 ms; nunca
+foi executada nessa escala e a meta era inalcançável nesta máquina, com o gerador de carga
+disputando CPU com os 18 contêineres. Números que não foram medidos não ficam num plano de testes.
+
+O `tipo:leitura` fica registrado como **meta não atingida**, e não como limiar afrouxado.
+
+**Sobre o gerador.** Ele precisou ser corrigido para descrever o que dizia descrever — detalhe em
+[`resultados/`](resultados/README.md). A primeira versão gerava uma conta nova por iteração mas
+mantinha dispositivo e IP fixos por usuário virtual, o que fazia cada VU parecer um aparelho por
+onde passavam doze contas em dez minutos. O antifraude quarentenou 2.519 compradores e 96% dos
+checkouts falharam. **O detector estava certo**; o gerador é que descrevia um ataque.
 
 ### C2 — Contenção máxima
 
@@ -85,30 +101,41 @@ que dependem de otimismo: mede a degradação sob contenção real, não sob car
 
 Meta: zero overselling, e latência que degrada de forma previsível em vez de colapsar.
 
-### C3 — Fila virtual: com e sem
+### C3 — Fila virtual: com e sem, em dois pontos de operação
 
-O gráfico mais importante da apresentação. Mesmo cenário do C1, executado duas vezes, com a fila
-desligada e ligada pela feature flag.
+O gráfico mais importante da apresentação. Mesmo cenário, executado com a fila
+desligada e ligada pela feature flag — e repetido em **dois regimes de carga**,
+porque um único ponto não sustenta a conclusão.
 
-**Resultado medido** (250 VUs, 45 s, PSP com latência realista de 250 ms, pool de 8 conexões):
+| | 200 VUs | | 600 VUs | |
+|---|---|---|---|---|
+| | sem fila | com fila | sem fila | com fila |
+| Compras confirmadas | 2.488 | 2.198 | 1.669 | **2.724** |
+| p99 do checkout | 5,02 s | 6,36 s | 10,96 s | **2,10 s** |
+| Espera na fila (p95) | — | 3,32 s | — | 13,18 s |
 
-| | Sem fila | Com fila | |
-|---|---|---|---|
-| p99 do checkout | 5,01 s | **2,70 s** | −46% |
-| Erro no checkout | 1,46% | **0,36%** | −75% |
-| Pior caso | 8,62 s | **2,76 s** | −68% |
-| Compras confirmadas | 2.355 | 1.926 | −18% |
-| Espera na fila (p95) | — | 5,57 s | custo declarado |
+A 200 VUs a fila **atrapalha** — o núcleo não está saturado e a admissão vira
+espera pura. A 600 VUs ela vende **63% mais** com p99 **5,2× menor**.
 
-O ponto a dizer em voz alta na apresentação **não** é "a fila faz vender mais" — a medição mostrou
-que não é isso que acontece nesta faixa de carga. O ponto verdadeiro é melhor:
+**A fila não aumenta a capacidade — ela escolhe o ponto de operação, e só
+compensa depois do joelho da curva.**
 
-**A fila não aumenta a capacidade do sistema — ela escolhe o ponto de operação dele.**
+### C4 — Custo do antifraude no caminho crítico
 
-Sem fila, o sistema roda além do joelho da curva: entrega mais compras brutas, com o checkout em 5
-segundos no p99. A fila de espera não desapareceu — ela está escondida *dentro* de um checkout
-lento, onde o usuário não entende o que está acontecendo. Com fila, a espera fica visível,
-comunicada e mensurável, e o checkout responde em menos de um terço do tempo.
+Mesma carga, uma flag trocada (`risk_check_mode`). 200 VUs.
+
+| Métrica | sem antifraude | com antifraude |
+|---|---|---|
+| Compras confirmadas | 2.121 | 2.177 |
+| p95 do checkout | 3.411 ms | 3.076 ms |
+| Erro no checkout | 0,84% | **2,54%** |
+
+O custo em latência fica **abaixo da variação entre repetições**; o custo real é
++1,7 ponto percentual de checkouts recusados, que são os compradores
+quarentenados.
+
+**Meta não atingida:** `tipo:leitura` p95 fica em ~400 ms contra a meta de 300 ms,
+nas duas configurações. Registrada como falha, não como limiar afrouxado.
 
 ---
 

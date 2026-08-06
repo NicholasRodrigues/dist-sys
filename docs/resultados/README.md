@@ -213,42 +213,87 @@ incidental.
 
 ---
 
-## Carga — fila virtual com e sem
+## Carga — o custo do antifraude no caminho crítico
 
-`make load-without-queue && make load-with-queue && make compare`
+`make load-risk-off && make load-risk-on && make compare-risk`
 
-250 usuários virtuais, 45 segundos, evento de 40.000 assentos, PSP com latência
-realista de 250 ms, pool de 8 conexões no núcleo transacional.
+A integração põe uma chamada **síncrona** dentro do checkout, mais duas dentro da
+SAGA. A pergunta que isso obriga a responder é quanto custa — e a resposta só vem
+medindo o mesmo sistema com a verificação ligada e desligada, que é o que a flag
+`risk_check_mode` permite fazer sem tocar em código.
 
-| Métrica | Sem fila | Com fila | Diferença |
+200 VUs, 60 s, PSP a 250 ms, fila ligada a 40/s.
+
+| Métrica | sem antifraude | com antifraude | Diferença |
 |---|---|---|---|
-| Compras confirmadas | 2.355 | 1.926 | −18,2% |
-| Taxa de sucesso do checkout | 98,25% | 99,38% | +1,2% |
-| Erro no checkout | 1,46% | 0,36% | **−75,3%** |
-| p95 do checkout | 4,55 s | 2,31 s | **−49,4%** |
-| p99 do checkout | 5,01 s | 2,70 s | **−46,2%** |
-| Pior caso do checkout | 8,62 s | 2,76 s | **−68,0%** |
-| Assentos perdidos na disputa | 35 | 7 | −80,0% |
-| Espera na fila (p95) | — | 5,57 s | custo declarado |
+| Compras confirmadas | 2.121 | 2.177 | +56 |
+| p95 do checkout | 3.411 ms | 3.076 ms | −335 ms |
+| p99 do checkout | 3.790 ms | 3.695 ms | −95 ms |
+| **Erro no checkout** | **0,84%** | **2,54%** | **+1,7 p.p.** |
 
 ### Leitura do resultado
 
+**O custo em latência fica abaixo da variação entre repetições.** Não é que o
+antifraude acelere nada — é que a consulta é um `SELECT` por chave primária numa
+projeção de leitura, atrás de um circuit breaker, e some no ruído de um checkout
+que já gasta segundos com fila, hold e PSP.
+
+**O custo real é a taxa de erro:** +1,7 ponto percentual de checkouts recusados.
+Esses são compradores quarentenados. É o preço de a verificação valer alguma
+coisa — um antifraude que não recusa ninguém não custa nada e não serve para nada.
+
+---
+
+## Carga — fila virtual, em dois pontos de operação
+
+`make load-without-queue && make load-with-queue && make compare`
+
+Esta é a medição que mais ensina, e só ensina porque foi feita **duas vezes, em
+regimes diferentes**.
+
+| | 200 VUs | | 600 VUs | |
+|---|---|---|---|---|
+| | sem fila | com fila | sem fila | com fila |
+| Compras confirmadas | 2.488 | 2.198 | 1.669 | **2.724** |
+| Erro no checkout | 2,07% | 1,43% | 1,12% | 2,15% |
+| p95 do checkout | 4,70 s | 5,11 s | 10,04 s | **1,82 s** |
+| p99 do checkout | 5,02 s | 6,36 s | 10,96 s | **2,10 s** |
+| Pior caso | 5,44 s | 6,69 s | 12,47 s | **2,52 s** |
+| Espera na fila (p95) | — | 3,32 s | — | 13,18 s |
+
+**A 200 VUs a fila atrapalha.** Vende 12% menos e o p99 piora. O núcleo não está
+saturado, e o controle de admissão vira espera pura.
+
+**A 600 VUs ela vende 63% mais, com p99 5,2× menor.** Sem fila, o sistema roda
+muito além do joelho: 19.260 iterações produzem apenas 1.669 compras, com o
+checkout em 11 segundos. Com fila, 2.833 iterações produzem 2.724 compras.
+
+### A conclusão que os dois pontos permitem
+
 **A fila virtual não aumenta a capacidade do sistema — ela escolhe o ponto de
-operação dele.**
+operação dele, e só compensa depois do joelho da curva.**
 
-Sem fila, o sistema roda além do joelho da curva: entrega mais compras brutas,
-mas o checkout chega a 5 segundos no p99 e a leitura do mapa degrada junto. A
-fila de espera continua existindo — ela só está **escondida dentro de um checkout
-lento**, onde o usuário não entende o que está acontecendo.
+Abaixo da saturação é custo puro; acima, é a diferença entre um sistema que
+entrega e um que se debate. A fila de espera nunca desaparece: sem controle de
+admissão ela está escondida *dentro* de um checkout de 11 segundos, onde o
+usuário não entende o que está acontecendo. Com ele, fica visível, comunicada e
+mensurável — 13,2 s de espera declarada em troca de comprar em 2 segundos.
 
-Com fila, o mesmo sistema entrega quase o mesmo número de compras com metade da
-latência, um quarto dos erros, e a espera movida para um lugar visível e
-comunicado.
+Uma versão anterior deste documento reportava a fila vencendo a 250 VUs. Aquele
+número foi medido com um gerador que comprava sem pausa de leitura; ao corrigir o
+gerador para o ritmo de uma pessoa, o mesmo ponto de operação inverteu de sinal.
+**Os dois resultados estão certos** — e é justamente por isso que um único ponto
+de medição não sustenta a conclusão.
 
-As 429 compras a menos são o preço da taxa de admissão configurada (40/s).
-Subi-la aproxima as duas vazões; passar do joelho devolve a latência ruim. **Esse
-ajuste é a decisão de engenharia que a fila torna explícita** — sem ela, o
-sistema opera onde a carga mandar.
+---
+
+## Metas não atingidas
+
+Registradas como falha, e não como limiar afrouxado:
+
+| Meta | Medido | Nota |
+|---|---|---|
+| `http_req_duration{tipo:leitura}` p95 < 300 ms | **~400 ms** | A consulta de assento livre sob 200 VUs nesta máquina. Não é efeito do antifraude: o valor é o mesmo com a verificação ligada e desligada |
 
 ---
 
