@@ -39,20 +39,38 @@ function delta(comFila: number, semFila: number, menorEhMelhor: boolean): string
   return `${sinal}${variacao.toFixed(1)}%  ${melhorou ? '(melhor)' : '(pior)'}`;
 }
 
+/**
+ * Compara duas rodadas quaisquer.
+ *
+ * Comeca como o comparador da fila virtual e vira generico por necessidade: a
+ * integracao com o antifraude criou uma segunda pergunta da mesma forma —
+ * "quanto custa esta decisao?" — e ela se responde do mesmo jeito, rodando a
+ * MESMA carga contra o MESMO sistema com uma flag trocada.
+ *
+ *   node dist/tools/compare.js                                    fila virtual
+ *   node dist/tools/compare.js risco-off risco-on "sem" "com"     antifraude
+ */
 async function main(): Promise<void> {
   const dir = process.env.RESULTS_DIR ?? '/resultados';
-  const comFila = await load(`${dir}/com-fila.json`);
-  const semFila = await load(`${dir}/sem-fila.json`);
+  const [baseNome, tratNome, baseRotulo, tratRotulo] = [
+    process.argv[2] ?? 'sem-fila',
+    process.argv[3] ?? 'com-fila',
+    process.argv[4] ?? 'sem fila',
+    process.argv[5] ?? 'com fila',
+  ];
+  const ehFila = baseNome === 'sem-fila';
+
+  const comFila = await load(`${dir}/${tratNome}.json`);
+  const semFila = await load(`${dir}/${baseNome}.json`);
 
   if (!comFila || !semFila) {
     console.error(`
-  Faltam resultados para comparar.
+  Faltam resultados para comparar (${baseNome}.json e ${tratNome}.json).
 
-  Rode as duas rodadas primeiro:
+  Rode as duas rodadas primeiro. Por exemplo:
 
-      make load-without-queue
-      make load-with-queue
-      make compare
+      make load-without-queue && make load-with-queue && make compare
+      make load-risk-off && make load-risk-on && make compare-risk
 `);
     process.exit(1);
   }
@@ -64,10 +82,10 @@ async function main(): Promise<void> {
   };
 
   p('');
-  p('  FILA VIRTUAL: COM E SEM');
+  p(`  ${(ehFila ? 'FILA VIRTUAL: COM E SEM' : `${baseRotulo.toUpperCase()} x ${tratRotulo.toUpperCase()}`)}`);
   p('  ' + '='.repeat(76));
   p('');
-  p(`  ${'metrica'.padEnd(30)} ${'sem fila'.padStart(12)} ${'com fila'.padStart(12)}   diferenca`);
+  p(`  ${'metrica'.padEnd(30)} ${baseRotulo.padStart(12)} ${tratRotulo.padStart(12)}   diferenca`);
   p('  ' + '-'.repeat(76));
 
   const comparacoes: [string, number, number, boolean][] = [
@@ -135,7 +153,26 @@ async function main(): Promise<void> {
 
   const ganhoLatencia = p99Sem > 0 ? p99Sem / Math.max(p99Com, 1) : 1;
 
-  if (ganhoLatencia > 1.5) {
+  if (!ehFila) {
+    // Comparacao de custo: o que interessa e o preco em latencia e se ele
+    // muda o resultado de negocio.
+    const custoP95 = metric(comFila, 'http_req_duration{tipo:checkout}', 'p(95)')
+      - metric(semFila, 'http_req_duration{tipo:checkout}', 'p(95)');
+    const custoP99 = p99Com - p99Sem;
+    const deltaCompras = comprasCom - comprasSem;
+
+    p(`  Custo da decisao no checkout: ${custoP95 >= 0 ? '+' : ''}${fmtMs(custoP95)} no p95 e`);
+    p(`  ${custoP99 >= 0 ? '+' : ''}${fmtMs(custoP99)} no p99.`);
+    p('');
+    p(`  Compras confirmadas: ${comprasSem} sem, ${comprasCom} com (${deltaCompras >= 0 ? '+' : ''}${deltaCompras}).`);
+    p('');
+    p('  A verificacao antifraude e uma chamada SINCRONA no caminho mais critico');
+    p('  do sistema, mais duas dentro da SAGA. O numero acima e o preco dela — e');
+    p('  ele so e pequeno porque a consulta e um SELECT por chave primaria numa');
+    p('  projecao de leitura, atras de um circuit breaker. Se o antifraude cair,');
+    p('  o breaker absorve e a flag `risk_check_mode` decide se a venda continua.');
+    p('');
+  } else if (ganhoLatencia > 1.5) {
     p('  A fila virtual nao aumenta a capacidade do sistema — ela ESCOLHE o ponto');
     p('  de operacao dele.');
     p('');

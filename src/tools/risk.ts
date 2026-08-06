@@ -101,14 +101,55 @@ async function relatorio(): Promise<void> {
   console.log('');
 }
 
+/**
+ * Zera o estado do antifraude, com espera e retentativa.
+ *
+ * `TRUNCATE` exige lock exclusivo nas tabelas, e o worker esta escrevendo nelas
+ * o tempo todo — cada mensagem abre uma transacao que grava evento, evidencia e
+ * projecao. Sem cuidado, a limpeza e o consumo se travam mutuamente e o
+ * PostgreSQL mata um dos dois com `deadlock detected`.
+ *
+ * Foi exatamente o que aconteceu ao encadear `risk-reset` antes de uma rodada
+ * de carga: o reset morria, o `make` abortava, e a carga seguinte reaproveitava
+ * o sumario antigo em silencio — duas rodadas "diferentes" com numeros
+ * identicos ate o ultimo digito.
+ *
+ * A correcao e a que se aplica a qualquer manutencao concorrente com trafego
+ * vivo: limitar quanto tempo se espera pelo lock e tentar de novo, em vez de
+ * insistir ou desistir.
+ */
 async function reset(): Promise<void> {
-  // Ordem importa: `processed_events` por ultimo garante que uma reentrega que
-  // chegue no meio da limpeza ainda seja tratada como duplicata, em vez de
-  // ressuscitar um score meio apagado.
-  await pool.query(`TRUNCATE risk_evidence, risk_events, buyer_risk_summary, dead_letters`);
-  await pool.query(`TRUNCATE processed_events`);
-  console.log('\n  antifraude zerado: eventos, evidencias e scores apagados');
-  console.log('  pesos, limiar e historico de quarentena preservados\n');
+  const TENTATIVAS = 8;
+
+  for (let tentativa = 1; tentativa <= TENTATIVAS; tentativa++) {
+    const client = await pool.connect();
+    try {
+      // Sem isto, o TRUNCATE fica na fila do lock indefinidamente e vira o lado
+      // perdedor de um deadlock em vez de simplesmente esperar a sua vez.
+      await client.query(`SET lock_timeout = '2s'`);
+      await client.query('BEGIN');
+      // Ordem importa: `processed_events` por ultimo garante que uma reentrega
+      // que chegue no meio da limpeza ainda seja tratada como duplicata, em vez
+      // de ressuscitar um score meio apagado.
+      await client.query(
+        `TRUNCATE risk_evidence, risk_events, buyer_risk_summary, dead_letters, processed_events`,
+      );
+      await client.query('COMMIT');
+      console.log('\n  antifraude zerado: eventos, evidencias e scores apagados');
+      console.log('  pesos, limiar e historico de quarentena preservados\n');
+      return;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      const msg = String(err);
+      const contencao = /deadlock detected|lock timeout|canceling statement/i.test(msg);
+      if (!contencao || tentativa === TENTATIVAS) throw err;
+      const espera = 300 * 2 ** (tentativa - 1);
+      console.log(`  banco ocupado pelo worker, nova tentativa em ${espera} ms (${tentativa}/${TENTATIVAS})`);
+      await new Promise((r) => setTimeout(r, espera));
+    } finally {
+      client.release();
+    }
+  }
 }
 
 async function main(): Promise<void> {

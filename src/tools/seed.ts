@@ -1,3 +1,4 @@
+import type pg from 'pg';
 import { poolFor } from './pools.js';
 
 /**
@@ -41,19 +42,52 @@ const EVENTS: EventSpec[] = [
   },
 ];
 
+
+/**
+ * TRUNCATE resiliente a contencao.
+ *
+ * O seed roda com o sistema NO AR — e isso e proposital, porque uma rodada de
+ * carga comeca recarregando os dados sem derrubar nada. Mas `TRUNCATE` exige
+ * lock exclusivo, e consumidores da outbox e o motor antifraude estao
+ * escrevendo nas mesmas tabelas o tempo todo. Sem limite de espera, os dois
+ * lados se travam e o PostgreSQL mata um com `deadlock detected`.
+ *
+ * O limite de lock transforma "trava e morre" em "espera um pouco e tenta de
+ * novo", que e o comportamento certo para manutencao concorrente com trafego.
+ */
+async function truncar(pool: pg.Pool, tabelas: string, tentativas = 8): Promise<void> {
+  for (let i = 1; i <= tentativas; i++) {
+    const client = await pool.connect();
+    try {
+      await client.query(`SET lock_timeout = '2s'`);
+      await client.query('BEGIN');
+      await client.query(`TRUNCATE ${tabelas}`);
+      await client.query('COMMIT');
+      return;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      const contencao = /deadlock detected|lock timeout|canceling statement/i.test(String(err));
+      if (!contencao || i === tentativas) throw err;
+      await new Promise((r) => setTimeout(r, 300 * 2 ** (i - 1)));
+    } finally {
+      client.release();
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const inventory = poolFor('inventory');
   const catalog = poolFor('catalog');
 
   try {
     console.log('limpando dados anteriores...');
-    await inventory.query('TRUNCATE seat_holds, seats, outbox, idempotency_keys');
-    await catalog.query('TRUNCATE seat_view, event_stats, events, processed_events');
+    await truncar(inventory, 'seat_holds, seats, outbox, idempotency_keys');
+    await truncar(catalog, 'seat_view, event_stats, events, processed_events');
 
     const orders = poolFor('orders');
     const payments = poolFor('payments');
-    await orders.query('TRUNCATE tickets, saga_log, notifications, orders, outbox, idempotency_keys');
-    await payments.query('TRUNCATE ledger_entries, charges, outbox, idempotency_keys');
+    await truncar(orders, 'tickets, saga_log, notifications, orders, outbox, idempotency_keys');
+    await truncar(payments, 'ledger_entries, charges, outbox, idempotency_keys');
     await orders.end();
     await payments.end();
 

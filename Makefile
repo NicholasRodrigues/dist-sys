@@ -161,6 +161,42 @@ contention: ## Carga de contencao maxima: todos disputando o mesmo setor
 	@$(COMPOSE) run --rm -T k6 run /scripts/contention.js
 	@$(MAKE) --no-print-directory invariants
 
+# O custo do antifraude no caminho critico.
+#
+# A integracao poe uma chamada SINCRONA dentro do checkout, mais duas dentro da
+# SAGA. A pergunta que isso obriga a responder e quanto essa decisao custa em
+# latencia — e ela so tem resposta medindo o MESMO sistema com a verificacao
+# ligada e desligada, que e o que a flag `risk_check_mode` permite fazer sem
+# tocar em uma linha de codigo.
+load-risk-off: ## Carga com a verificacao antifraude desligada
+	@mkdir -p docs/resultados
+	@rm -f docs/resultados/risco-off.json docs/resultados/risco-off.txt
+	@$(RUN) node dist/tools/seed.js >/dev/null
+	@$(RUN) node dist/tools/risk.js reset >/dev/null
+	@$(LOAD_PREP)
+	@$(RUN) node dist/tools/flags.js queue_enabled=true admission_rate=$(or $(RATE),40) risk_check_mode=disabled
+	@$(RUN) node dist/tools/reset-queue.js >/dev/null
+	@$(COMPOSE) run --rm -T -e SCENARIO=risco-off k6 run /scripts/flashsale.js
+
+# O reset do antifraude entre rodadas nao e higiene opcional: a evidencia de
+# risco e append-only e a janela e de dez minutos, entao duas rodadas seguidas
+# fazem a segunda herdar os compradores da primeira no mesmo IP. Sem ele, a
+# primeira rodada passa e a seguinte colapsa — foi exatamente o que aconteceu.
+load-risk-on: ## Carga com a verificacao antifraude no caminho critico
+	@mkdir -p docs/resultados
+	@rm -f docs/resultados/risco-on.json docs/resultados/risco-on.txt
+	@$(RUN) node dist/tools/seed.js >/dev/null
+	@$(RUN) node dist/tools/risk.js reset >/dev/null
+	@$(LOAD_PREP)
+	@$(RUN) node dist/tools/flags.js queue_enabled=true admission_rate=$(or $(RATE),40) risk_check_mode=fail_open
+	@$(RUN) node dist/tools/reset-queue.js >/dev/null
+	@$(COMPOSE) run --rm -T -e SCENARIO=risco-on k6 run /scripts/flashsale.js
+
+compare-risk: ## O custo do antifraude: mesma carga com e sem a verificacao
+	@$(RUN) node dist/tools/compare.js risco-off risco-on "sem antifraude" "com antifraude"
+	@$(RUN) node dist/tools/psp.js reset >/dev/null
+	@$(RUN) node dist/tools/flags.js rate_limit_max=2000 risk_check_mode=fail_open >/dev/null
+
 ## ---------------------------------------------------------------------------
 
 deploy-status: ## Mostra os pesos de roteamento e amostra o trafego real
