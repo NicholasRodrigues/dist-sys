@@ -245,7 +245,8 @@ só compensa depois do joelho da curva. Custo declarado: 13,2 s de espera no p95
 | [`docs/poc2/plano.md`](docs/poc2/plano.md) | **POC 2 — antifraude:** mapeamento de domínio, C4, cenários e o que mudou do rascunho |
 | [`docs/resultados/`](docs/resultados/README.md) | **Resultados medidos** |
 | [`docs/trade-offs.md`](docs/trade-offs.md) | 11 decisões com custo e condição de reversão |
-| [`docs/roadmap.md`](docs/roadmap.md) | Fases, trilhas e roteiro do videocast |
+| [`docs/apresentacao.md`](docs/apresentacao.md) | **Guia passo a passo da apresentação** — o que rodar, o que dizer, e o que fazer se travar |
+| [`docs/roadmap.md`](docs/roadmap.md) | Fases, trilhas e roteiro cronometrado do videocast |
 | [`docs/adr/`](docs/adr/) | Architecture Decision Records |
 
 ---
@@ -281,8 +282,11 @@ infra/             Traefik, Prometheus, Grafana
 ## Videocast
 
 > Link a incluir antes da entrega final (obrigatório pelo checklist da Seção 7).
-> Roteiro cronometrado em [`docs/roadmap.md`](docs/roadmap.md);
-> `make demo` executa a sequência da demonstração.
+
+Para apresentar: **[`docs/apresentacao.md`](docs/apresentacao.md)** tem o passo a
+passo completo — preparação, os dez blocos com o que rodar e o que dizer em cada
+um, as perguntas prováveis com as respostas, e o plano B se a demo travar ao vivo.
+O roteiro cronometrado por integrante está em [`docs/roadmap.md`](docs/roadmap.md).
 
 ---
 
