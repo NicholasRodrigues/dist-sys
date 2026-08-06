@@ -64,7 +64,7 @@ raciocínio completo.
 
 | Tópico | Onde | Prova |
 |---|---|---|
-| Esteira de Pipeline, Build e Deployment | GitHub Actions (`.github/workflows/ci.yml`): tipos e unitários num estágio barato, e a bateria inteira contra os 18 contêineres no ar num segundo estágio | Pipeline verde; os logs dos serviços ficam anexados a cada execução |
+| Esteira de Pipeline, Build e Deployment | GitHub Actions (`.github/workflows/ci.yml`): tipos e unitários num estágio barato, e a bateria inteira contra os 18 contêineres no ar num segundo estágio | As mesmas baterias medidas em [`resultados/`](resultados/README.md), executáveis localmente com `make clean && make up && make test`. Os logs dos serviços ficam anexados a cada execução. Ressalva honesta: a esteira está definida e versionada, mas ainda **não** fechou verde no GitHub — a primeira execução ficou 15 minutos na fila sem receber runner e foi cancelada, o que é limite de conta e não defeito do workflow |
 | Immutable Deployment | Imagens versionadas por digest, nunca `latest` | Rollback por digest |
 | Estratégia de Deployment | Documentada em [`adr/0010`](adr/) com o critério de escolha | Comparação das opções |
 | Blue-Green | Dois conjuntos do `catalog` com troca de peso no Traefik | Troca de tráfego e rollback demonstrados |
