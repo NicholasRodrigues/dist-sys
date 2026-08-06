@@ -186,7 +186,7 @@ comprador olhando para um número.
 - Quarentena que chega **depois do pagamento** → a SAGA compensa com **estorno** + devolve o assento
 - Com o `risk-api` **realmente parado**: `fail_open` vende, `fail_closed` bloqueia,
   e a chave vira em tempo de execução sem reiniciar nada ([ADR-0015](docs/adr/0015-fail-open-no-portao-antifraude.md))
-- Circuit breaker mantém o checkout em **268 ms** com a dependência morta
+- Circuit breaker mantém o checkout em **~194 ms** (mediana de 5 compras) com a dependência morta
 
 ### Antifraude — quanto custou (`make compare-risk`)
 

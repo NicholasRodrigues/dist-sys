@@ -68,12 +68,21 @@ demonstração é virar a chave na tela e ver o comportamento inverter.
 | `fail_open` com o antifraude no chão | HTTP 201 — vendeu para um comprador em quarentena |
 | `fail_closed` com o antifraude no chão | HTTP 403 — `verificacao antifraude indisponivel` |
 | Alternância entre os dois modos | mesma instância, comportamento oposto, sem reinício |
-| Custo do checkout com a dependência morta | **268 ms** |
+| Custo do checkout com a dependência morta | **194 ms** (mediana de 5 compras) |
 
 O último número é o que sustenta a decisão. Sem breaker seriam 1200 ms de *timeout*
-mais uma retentativa, por compra. O teste falha se passar de 1200 ms, justamente para
+mais uma retentativa, e uma compra faz até três consultas de risco — a da borda e as
+duas de dentro da SAGA. O teste falha se a mediana passar de 1200 ms, justamente para
 que uma futura remoção do breaker apareça como falha de teste e não como lentidão
 inexplicada em produção.
+
+A medição é a **mediana de cinco compras**, e não uma amostra, por um motivo que só
+apareceu quando o CI rodou: o breaker aberto volta a meio-aberto a cada 5 s para sondar
+se a dependência voltou, e essa sondagem paga o *timeout* real. Isso é o comportamento
+correto — sem ela o breaker nunca fecharia sozinho. Uma amostra única que caia na
+sondagem mede exatamente o único caso lento que existe de propósito: o mesmo código deu
+268 ms na máquina local e 3858 ms no CI. A afirmação que se quer sustentar é sobre o
+custo **típico** por checkout, e a mediana é a leitura honesta disso.
 
 A fase 3 confirma que a quarentena sobrevive à indisponibilidade: o estado vive no banco
 do Risk-Shield, não na memória de quem consulta.

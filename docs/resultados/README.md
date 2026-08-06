@@ -161,7 +161,7 @@ não tem resposta simulável.
 | 2 | `fail_open` com o antifraude no chão | HTTP 201 |
 | 2 | `fail_closed` com o antifraude no chão | HTTP 403 |
 | 2 | Alternância de modo em tempo de execução | sem reinício |
-| 2 | Circuit breaker impede espera por *timeout* | **268 ms** |
+| 2 | Circuit breaker impede espera por *timeout* | **194 ms** (mediana de 5) |
 | 3 | A quarentena sobreviveu à indisponibilidade | HTTP 403 |
 | 3 | O breaker fecha sozinho quando a dependência volta | consultas atendidas |
 

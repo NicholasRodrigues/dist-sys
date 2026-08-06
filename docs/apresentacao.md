@@ -236,7 +236,7 @@ docker compose start risk-api
 
 E o detalhe que sustenta a decisão:
 
-> "O checkout continua respondendo em **268 ms** com a dependência morta. Sem o
+> "O checkout continua respondendo em **~194 ms** com a dependência morta. Sem o
 > circuit breaker, `fail_open` na teoria seria 'cada compra espera o timeout' na
 > prática — uma forma lenta de `fail_closed`."
 

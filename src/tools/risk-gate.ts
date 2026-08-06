@@ -403,15 +403,40 @@ async function faseIndisponivel(): Promise<void> {
     // Sem breaker, "seguir em frente" custaria o timeout inteiro da consulta
     // (1200 ms, mais uma retentativa) em CADA checkout.
     //
-    // A medicao cobre so o POST: incluir a preparacao mediria o tempo de
-    // leitura simulado, e nao a dependencia no chao.
-    const disparar = await prepararCompra(BLOQUEADO);
-    const inicio = Date.now();
-    const res = await disparar();
-    const ms = Date.now() - inicio;
-    assert(res.status === 201, `esperava 201, veio ${res.status}`);
-    assert(ms < 1_200, `o checkout levou ${ms} ms: o breaker nao esta absorvendo a falha`);
-    return `checkout completo em ${ms} ms com a dependencia no chao`;
+    // Medimos a MEDIANA de cinco compras, e nao uma amostra. O motivo e que o
+    // breaker aberto volta a meio-aberto a cada 5 s para sondar se a dependencia
+    // voltou — e essa sondagem paga o timeout real. Isso e o comportamento
+    // desejado: sem ela o breaker nunca fecharia sozinho.
+    //
+    // Uma amostra unica que caia na sondagem mede exatamente o unico caso lento
+    // que existe de proposito. Foi assim que este teste passou local (268 ms) e
+    // falhou no CI (3858 ms) com o mesmo codigo — a diferenca era so em que
+    // ponto do ciclo de 5 s a medicao caiu.
+    //
+    // A afirmacao que queremos sustentar e sobre o custo TIPICO por checkout, e
+    // a mediana e a leitura honesta disso. Uma compra faz ate tres consultas de
+    // risco (borda, e duas dentro da SAGA), em processos com breakers proprios.
+    const amostras: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const disparar = await prepararCompra(BLOQUEADO);
+      const inicio = Date.now();
+      const res = await disparar();
+      amostras.push(Date.now() - inicio);
+      assert(res.status === 201, `amostra ${i + 1}: esperava 201, veio ${res.status}`);
+    }
+
+    const ordenadas = [...amostras].sort((a, b) => a - b);
+    const mediana = ordenadas[Math.floor(ordenadas.length / 2)];
+
+    assert(
+      mediana < 1_200,
+      `mediana de ${mediana} ms em ${amostras.length} compras ` +
+        `[${amostras.join(', ')}] — o breaker nao esta absorvendo a falha`,
+    );
+    return (
+      `mediana de ${mediana} ms com a dependencia no chao ` +
+      `(amostras: ${ordenadas.join(', ')} ms)`
+    );
   });
 }
 
